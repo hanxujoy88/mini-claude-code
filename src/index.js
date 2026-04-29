@@ -6,9 +6,11 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { spawn } from "node:child_process";
 
-const API_URL = "https://api.anthropic.com/v1/messages";
 const API_VERSION = "2023-06-01";
-const MODEL = process.env.MINI_CLAUDE_MODEL || "claude-3-5-sonnet-latest";
+const PROVIDER = (process.env.MINI_CLAUDE_PROVIDER || "anthropic").toLowerCase();
+const MODEL = process.env.MINI_CLAUDE_MODEL || defaultModelForProvider(PROVIDER);
+const API_KEY = readApiKey();
+const API_URL = readApiUrl();
 const MAX_TOKENS = Number(process.env.MINI_CLAUDE_MAX_TOKENS || 4096);
 const WORKSPACE = process.cwd();
 const AUTO_YES = process.argv.includes("--yes") || process.argv.includes("-y");
@@ -188,6 +190,7 @@ The workspace root is: ${WORKSPACE}`;
 function printBanner() {
   console.log("Mini Claude Code");
   console.log(`Workspace: ${WORKSPACE}`);
+  console.log(`Provider: ${PROVIDER}`);
   console.log(`Model: ${MODEL}`);
   console.log(`Sandbox: ${SANDBOX_MODE}`);
   if (ALLOWED_COMMANDS.length > 0) {
@@ -197,9 +200,19 @@ function printBanner() {
 }
 
 async function main() {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.error("Missing ANTHROPIC_API_KEY.");
-    console.error("Run: export ANTHROPIC_API_KEY=\"sk-ant-...\"");
+  if (!API_KEY) {
+    console.error("Missing API key.");
+    console.error("Run one of:");
+    console.error("  export ANTHROPIC_API_KEY=\"sk-ant-...\"");
+    console.error("  export MINI_CLAUDE_PROVIDER=moonshot MINI_CLAUDE_API_KEY=\"sk-...\"");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!isByteString(API_KEY)) {
+    console.error("Invalid API key: it contains non-ASCII characters.");
+    console.error("Make sure you replaced the example text with the real key, for example:");
+    console.error("  export MINI_CLAUDE_API_KEY=\"sk-...\"");
     process.exitCode = 1;
     return;
   }
@@ -221,7 +234,7 @@ async function main() {
 
 async function runAssistantTurn(messages) {
   while (true) {
-    const response = await callAnthropic(messages);
+    const response = await callModel(messages);
     messages.push({ role: "assistant", content: response.content });
 
     const toolUses = response.content.filter((block) => block.type === "tool_use");
@@ -248,6 +261,14 @@ async function runAssistantTurn(messages) {
   }
 }
 
+async function callModel(messages, options = {}) {
+  if (PROVIDER === "anthropic") {
+    return callAnthropic(messages, options);
+  }
+
+  return callOpenAICompatible(messages, options);
+}
+
 async function callAnthropic(messages, options = {}) {
   const body = {
     model: MODEL,
@@ -262,7 +283,7 @@ async function callAnthropic(messages, options = {}) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "x-api-key": API_KEY,
       "anthropic-version": API_VERSION
     },
     body: JSON.stringify(body)
@@ -274,6 +295,131 @@ async function callAnthropic(messages, options = {}) {
   }
 
   return res.json();
+}
+
+async function callOpenAICompatible(messages, options = {}) {
+  const activeTools = options.tools ?? tools;
+  const body = {
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    messages: toOpenAIMessages(messages, options.system || systemPrompt)
+  };
+
+  if (activeTools.length > 0) {
+    body.tools = activeTools.map(toOpenAITool);
+    body.tool_choice = "auto";
+  }
+
+  const res = await fetch(`${API_URL.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${API_KEY}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${PROVIDER} API error ${res.status}: ${body}`);
+  }
+
+  const data = await res.json();
+  const message = data.choices?.[0]?.message;
+  if (!message) {
+    throw new Error(`${PROVIDER} API returned no message.`);
+  }
+
+  return { content: fromOpenAIMessage(message) };
+}
+
+function toOpenAIMessages(messages, system) {
+  const converted = [{ role: "system", content: system }];
+
+  for (const message of messages) {
+    if (message.role === "user" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block.type === "tool_result") {
+          converted.push({
+            role: "tool",
+            tool_call_id: block.tool_use_id,
+            content: block.content || ""
+          });
+        }
+      }
+      continue;
+    }
+
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      const text = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n")
+        .trim();
+      const toolCalls = message.content
+        .filter((block) => block.type === "tool_use")
+        .map((block) => ({
+          id: block.id,
+          type: "function",
+          function: {
+            name: block.name,
+            arguments: JSON.stringify(block.input || {})
+          }
+        }));
+
+      const convertedMessage = { role: "assistant", content: text || null };
+      if (toolCalls.length > 0) convertedMessage.tool_calls = toolCalls;
+      converted.push(convertedMessage);
+      continue;
+    }
+
+    converted.push({
+      role: message.role,
+      content: typeof message.content === "string"
+        ? message.content
+        : JSON.stringify(message.content)
+    });
+  }
+
+  return converted;
+}
+
+function toOpenAITool(tool) {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.input_schema
+    }
+  };
+}
+
+function fromOpenAIMessage(message) {
+  const content = [];
+  if (message.content && message.content.trim()) {
+    content.push({ type: "text", text: message.content });
+  }
+
+  for (const call of message.tool_calls || []) {
+    content.push({
+      type: "tool_use",
+      id: call.id,
+      name: call.function?.name,
+      input: parseToolArguments(call.function?.arguments)
+    });
+  }
+
+  return content.length > 0 ? content : [{ type: "text", text: "" }];
+}
+
+function parseToolArguments(raw) {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
 }
 
 async function runTool(name, input) {
@@ -438,7 +584,7 @@ async function delegateAgentTool({ role, task, context = "" }) {
     return { ok: false, error: `Unknown agent role: ${role}` };
   }
 
-  const response = await callAnthropic([
+  const response = await callModel([
     {
       role: "user",
       content: [
@@ -517,6 +663,32 @@ function readFlag(name) {
   const index = process.argv.indexOf(name);
   if (index >= 0 && process.argv[index + 1]) return process.argv[index + 1];
   return "";
+}
+
+function readApiKey() {
+  if (process.env.MINI_CLAUDE_API_KEY) return process.env.MINI_CLAUDE_API_KEY;
+  if (PROVIDER === "anthropic") return process.env.ANTHROPIC_API_KEY || "";
+  if (PROVIDER === "moonshot" || PROVIDER === "kimi") {
+    return process.env.MOONSHOT_API_KEY || process.env.KIMI_API_KEY || "";
+  }
+  return process.env.OPENAI_API_KEY || "";
+}
+
+function readApiUrl() {
+  if (process.env.MINI_CLAUDE_BASE_URL) return process.env.MINI_CLAUDE_BASE_URL;
+  if (PROVIDER === "anthropic") return "https://api.anthropic.com/v1/messages";
+  if (PROVIDER === "moonshot" || PROVIDER === "kimi") return "https://api.moonshot.cn/v1";
+  return "https://api.openai.com/v1";
+}
+
+function defaultModelForProvider(provider) {
+  if (provider === "moonshot" || provider === "kimi") return "kimi-k2.6";
+  if (provider === "openai") return "gpt-4.1-mini";
+  return "claude-3-5-sonnet-latest";
+}
+
+function isByteString(value) {
+  return [...value].every((char) => char.charCodeAt(0) <= 255);
 }
 
 async function confirm(question) {

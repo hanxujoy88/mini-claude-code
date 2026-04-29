@@ -31,12 +31,22 @@ This project is an independent learning implementation. It is not affiliated wit
 ## Requirements
 
 - Node.js 20+
-- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_API_KEY` or another supported provider key
 
 ## Usage
 
+Anthropic:
+
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
+npm start
+```
+
+Moonshot / Kimi:
+
+```bash
+export MINI_CLAUDE_PROVIDER=moonshot
+export MINI_CLAUDE_API_KEY="sk-..."
 npm start
 ```
 
@@ -44,6 +54,16 @@ Use a different model:
 
 ```bash
 MINI_CLAUDE_MODEL="claude-3-5-sonnet-latest" npm start
+```
+
+Use a custom OpenAI-compatible endpoint:
+
+```bash
+MINI_CLAUDE_PROVIDER=openai \
+MINI_CLAUDE_BASE_URL="https://api.example.com/v1" \
+MINI_CLAUDE_API_KEY="sk-..." \
+MINI_CLAUDE_MODEL="your-model" \
+npm start
 ```
 
 Run from another project:
@@ -127,8 +147,11 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 
 | Name | Default | Description |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | required | Anthropic API key |
-| `MINI_CLAUDE_MODEL` | `claude-3-5-sonnet-latest` | Model name |
+| `ANTHROPIC_API_KEY` | required for Anthropic | Anthropic API key |
+| `MINI_CLAUDE_API_KEY` | optional | Generic provider API key |
+| `MINI_CLAUDE_PROVIDER` | `anthropic` | `anthropic`, `moonshot`, `kimi`, or `openai` |
+| `MINI_CLAUDE_BASE_URL` | provider default | OpenAI-compatible base URL |
+| `MINI_CLAUDE_MODEL` | provider default | Model name |
 | `MINI_CLAUDE_MAX_TOKENS` | `4096` | Max output tokens per API call |
 | `MINI_CLAUDE_SANDBOX` | `workspace-write` | Sandbox mode, e.g. `read-only` |
 | `MINI_CLAUDE_ALLOWED_COMMANDS` | empty | Optional comma-separated command allowlist |

@@ -7,7 +7,7 @@ Mini Claude Code is a compact reference implementation of a coding agent loop.
 - Language: Node.js ESM
 - Minimum Node version: 20
 - Runtime dependencies: none
-- API: Anthropic Messages API
+- API: Anthropic Messages API or OpenAI-compatible chat completions
 - Entry point: `src/index.js`
 
 ## Conversation Loop
@@ -28,6 +28,25 @@ For each user prompt:
 6. Repeat until the assistant returns no tool calls.
 
 There is no persistent memory yet. Restarting the CLI starts a new conversation.
+
+## Provider Adapter
+
+Internally, Mini Claude Code keeps messages and tool calls in Anthropic-style blocks:
+
+- `text`
+- `tool_use`
+- `tool_result`
+
+For Anthropic, those blocks are sent directly to `/v1/messages`.
+
+For OpenAI-compatible providers such as Moonshot / Kimi, the adapter converts:
+
+- tool schemas to `tools: [{ type: "function", function: ... }]`
+- assistant `tool_use` blocks to `tool_calls`
+- user `tool_result` blocks to `role: "tool"` messages
+- OpenAI-compatible `tool_calls` back into internal `tool_use` blocks
+
+This keeps the agent loop provider-agnostic while preserving one implementation of local tools.
 
 ## Task Planning
 
@@ -173,8 +192,11 @@ MINI_CLAUDE_ALLOWED_COMMANDS="npm,git,ls,pwd" npm start
 
 Environment variables:
 
-- `ANTHROPIC_API_KEY`: required
-- `MINI_CLAUDE_MODEL`: defaults to `claude-3-5-sonnet-latest`
+- `ANTHROPIC_API_KEY`: required for Anthropic
+- `MINI_CLAUDE_API_KEY`: generic provider key
+- `MINI_CLAUDE_PROVIDER`: defaults to `anthropic`; supports `anthropic`, `moonshot`, `kimi`, and `openai`
+- `MINI_CLAUDE_BASE_URL`: optional OpenAI-compatible base URL
+- `MINI_CLAUDE_MODEL`: defaults by provider
 - `MINI_CLAUDE_MAX_TOKENS`: defaults to `4096`
 - `MINI_CLAUDE_SANDBOX`: defaults to `workspace-write`
 - `MINI_CLAUDE_ALLOWED_COMMANDS`: optional command prefix allowlist
