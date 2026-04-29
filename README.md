@@ -24,6 +24,7 @@ This project is an independent learning implementation. It is not affiliated wit
 - Small multi-agent delegation system
 - Terminal feedback spinners while the model thinks and tools run
 - Token usage in the `Thinking` status line after each model call, with session totals
+- Auto-discovered skills from `skills/*/SKILL.md`
 - Workspace sandboxing to the current project directory
 - Read-only sandbox mode
 - Optional command allowlist
@@ -156,6 +157,34 @@ The `delegate_agent` tool asks a specialized model persona for advice. Available
 - `tester`
 
 Sub-agents cannot call tools or edit files. They return text back to the main assistant, which decides what to do next.
+
+### Skills
+
+Mini Claude Code auto-discovers skills from:
+
+```text
+skills/<skill-name>/SKILL.md
+```
+
+Each skill can include optional frontmatter:
+
+```md
+---
+name: docs-writer
+description: Use when writing README files, tutorials, changelogs, or technical explanations.
+---
+
+# Instructions
+...
+```
+
+On each user request, the CLI scores the request against skill names and descriptions. Matching skills are injected as hidden context for that turn and shown in the terminal:
+
+```text
+[skills] docs-writer
+```
+
+Use `list_skills` from the assistant to inspect loaded skills.
 
 See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 

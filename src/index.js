@@ -24,6 +24,7 @@ const tokenTotals = {
   output: 0,
   total: 0
 };
+const skills = await loadSkills();
 
 const agents = {
   planner: "You are the Planner agent. Break ambiguous coding work into concise, ordered steps. Do not edit files. Focus on sequencing, risks, and test strategy.",
@@ -225,6 +226,15 @@ const tools = [
       properties: {},
       required: []
     }
+  },
+  {
+    name: "list_skills",
+    description: "List auto-discovered skills and descriptions.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: []
+    }
   }
 ];
 
@@ -247,6 +257,7 @@ function printBanner() {
   if (ALLOWED_COMMANDS.length > 0) {
     console.log(`Allowed commands: ${ALLOWED_COMMANDS.join(", ")}`);
   }
+  console.log(`Skills: ${skills.length ? skills.map((skill) => skill.name).join(", ") : "none"}`);
   console.log("Type /exit to quit.\n");
 }
 
@@ -275,6 +286,15 @@ async function main() {
     const text = await rl.question("> ");
     if (!text.trim()) continue;
     if (["/exit", "/quit"].includes(text.trim())) break;
+
+    const matchedSkills = matchSkills(text);
+    if (matchedSkills.length > 0) {
+      console.log(`[skills] ${matchedSkills.map((skill) => skill.name).join(", ")}`);
+      messages.push({
+        role: "user",
+        content: buildSkillContext(matchedSkills)
+      });
+    }
 
     messages.push({ role: "user", content: text });
     await runAssistantTurn(messages);
@@ -564,10 +584,22 @@ async function runTool(name, input) {
     if (name === "list_plan") return listPlanTool();
     if (name === "delegate_agent") return await delegateAgentTool(input);
     if (name === "sandbox_status") return sandboxStatusTool();
+    if (name === "list_skills") return listSkillsTool();
     return { ok: false, error: `Unknown tool: ${name}` };
   } catch (error) {
     return { ok: false, error: error.message };
   }
+}
+
+function listSkillsTool() {
+  if (skills.length === 0) {
+    return { ok: true, content: "No skills found. Add skills/<name>/SKILL.md." };
+  }
+
+  return {
+    ok: true,
+    content: skills.map((skill) => `${skill.name}: ${skill.description}`).join("\n")
+  };
 }
 
 async function runToolWithFeedback(name, input) {
@@ -804,6 +836,104 @@ function isAllowedCommand(command) {
 function readAllowedCommands() {
   const raw = process.env.MINI_CLAUDE_ALLOWED_COMMANDS || "";
   return raw.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+async function loadSkills() {
+  const skillsDir = path.join(WORKSPACE, "skills");
+  let entries = [];
+  try {
+    entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+
+  const loaded = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const filePath = path.join(skillsDir, entry.name, "SKILL.md");
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      const parsed = parseSkill(raw, entry.name, filePath);
+      loaded.push(parsed);
+    } catch (error) {
+      console.warn(`[skills] skipped ${entry.name}: ${error.message}`);
+    }
+  }
+
+  return loaded.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function parseSkill(raw, fallbackName, filePath) {
+  const frontmatter = raw.match(/^---\n([\s\S]*?)\n---\n?/);
+  const meta = {};
+  let body = raw;
+
+  if (frontmatter) {
+    body = raw.slice(frontmatter[0].length);
+    for (const line of frontmatter[1].split("\n")) {
+      const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+      if (match) {
+        meta[match[1]] = match[2].replace(/^["']|["']$/g, "").trim();
+      }
+    }
+  }
+
+  const name = meta.name || fallbackName;
+  const description = meta.description || firstParagraph(body) || "No description.";
+  return {
+    name,
+    description,
+    body: body.trim(),
+    filePath
+  };
+}
+
+function firstParagraph(text) {
+  return text.split(/\n\s*\n/).map((part) => part.trim()).find(Boolean) || "";
+}
+
+function matchSkills(text) {
+  if (skills.length === 0) return [];
+
+  const queryTokens = tokenize(`${text}`);
+  if (queryTokens.length === 0) return [];
+
+  const scored = skills.map((skill) => {
+    const haystackTokens = tokenize(`${skill.name} ${skill.description}`);
+    const score = queryTokens.reduce((sum, token) => {
+      if (haystackTokens.includes(token)) return sum + 2;
+      if (haystackTokens.some((candidate) => candidate.includes(token) || token.includes(candidate))) return sum + 1;
+      return sum;
+    }, 0);
+    return { skill, score };
+  });
+
+  return scored
+    .filter((item) => item.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map((item) => item.skill);
+}
+
+function tokenize(text) {
+  return text
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 2);
+}
+
+function buildSkillContext(matchedSkills) {
+  return [
+    "The following skill instructions were auto-selected for the next user request. Treat them as task guidance, not user-authored content.",
+    ...matchedSkills.map((skill) => [
+      `<skill name="${skill.name}" path="${path.relative(WORKSPACE, skill.filePath)}">`,
+      skill.body,
+      "</skill>"
+    ].join("\n"))
+  ].join("\n\n");
 }
 
 function readFlag(name) {

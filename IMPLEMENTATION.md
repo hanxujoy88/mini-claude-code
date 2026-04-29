@@ -84,6 +84,29 @@ Available roles:
 
 Sub-agents are intentionally read-only advisers. They cannot inspect the filesystem themselves, so the main assistant must pass relevant snippets or logs as `context`.
 
+## Skills
+
+Skills are loaded at startup from `skills/*/SKILL.md`.
+
+The loader supports simple YAML-like frontmatter:
+
+- `name`
+- `description`
+
+The body of the file is treated as instructions.
+
+For each user prompt, the CLI tokenizes the prompt and scores it against each skill's name and description. Up to two matching skills are injected before the user message as hidden contextual guidance.
+
+This is a minimal approximation of a production skill system:
+
+- No embeddings
+- No remote marketplace
+- No recursive asset loading
+- No explicit enable/disable registry
+- No long-term skill memory
+
+It is enough for small project-local workflows and for demonstrating automatic skill routing.
+
 ## Tool Set
 
 ### `list_files`
@@ -144,6 +167,10 @@ Calls a specialized sub-agent and returns its text response to the main assistan
 ### `sandbox_status`
 
 Reports current workspace, sandbox mode, auto-approval mode, and command policy.
+
+### `list_skills`
+
+Lists loaded skills and their descriptions.
 
 ## Workspace Boundary
 
@@ -220,5 +247,6 @@ This project is intentionally minimal. It does not yet include:
 - MCP support
 - Web search
 - Background task management
+- Skill asset loading and marketplace installation
 
 Those are natural next steps if you want to evolve it from a teaching implementation into a practical coding assistant.
