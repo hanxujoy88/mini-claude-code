@@ -12,22 +12,25 @@ Mini Claude Code is a compact reference implementation of a coding agent loop.
 
 ## Conversation Loop
 
-The CLI stores an in-memory `messages` array for the current session.
+The CLI restores a persistent `messages` array for the active session, defaulting to `.mini-claude-code/sessions/default.json`.
 
 For each user prompt:
 
 1. Push `{ role: "user", content: text }`.
-2. Call `POST /v1/messages` with:
+2. Save the session.
+3. Call the configured provider with:
    - `system` prompt
    - prior messages
    - tool schemas
    - configured model
-3. Print assistant `text` blocks.
-4. Execute any assistant `tool_use` blocks locally.
-5. Push one user message containing `tool_result` blocks.
-6. Repeat until the assistant returns no tool calls.
+   - streaming enabled
+4. Stream assistant `text` blocks to stdout as deltas arrive.
+5. Save the completed assistant message.
+6. Execute any assistant `tool_use` blocks locally.
+7. Push one user message containing `tool_result` blocks.
+8. Save the session and repeat until the assistant returns no tool calls.
 
-There is no persistent memory yet. Restarting the CLI starts a new conversation.
+Use `/new` to clear the active conversation, plan, skill state, and token totals.
 
 ## Provider Adapter
 
@@ -48,7 +51,25 @@ For OpenAI-compatible providers such as Moonshot / Kimi, the adapter converts:
 
 This keeps the agent loop provider-agnostic while preserving one implementation of local tools.
 
-The adapter also normalizes token usage into `{ input, output, total }`. While the model call is in flight, the `Thinking` spinner shows elapsed seconds and accumulated session tokens. When the call finishes, the same status line shows the current call's token usage plus updated session totals. Model calls are aborted after `MINI_CLAUDE_TIMEOUT_MS` milliseconds, defaulting to 120 seconds.
+The adapter also normalizes token usage into `{ input, output, total }`. During streaming calls, assistant text is printed as the provider emits deltas. When the call finishes, the `Thinking` status line shows the current call's token usage plus updated session totals when the provider reports usage. Model calls are aborted after `MINI_CLAUDE_TIMEOUT_MS` milliseconds, defaulting to 120 seconds.
+
+### Streaming
+
+Anthropic streaming is parsed from Server-Sent Events:
+
+- `content_block_start` creates internal text or tool-use blocks
+- `text_delta` is written directly to stdout and appended to the current text block
+- `input_json_delta` is accumulated until the tool-use block closes
+- `message_start` and `message_delta` provide token usage
+
+OpenAI-compatible streaming is parsed from chat completion chunks:
+
+- `delta.content` is written directly to stdout
+- `delta.tool_calls` is accumulated by tool-call index
+- `delta.reasoning_content` is preserved for providers such as Moonshot / Kimi
+- `stream_options.include_usage` is requested, with a fallback retry for providers that reject it
+
+Sub-agent calls intentionally remain non-streaming so internal adviser output does not appear directly in the main terminal transcript.
 
 ## Task Planning
 
@@ -69,7 +90,7 @@ The assistant can manage it with:
 - `update_task`
 - `list_plan`
 
-This gives the model enough structure to handle multi-step tasks without adding a database or background scheduler.
+This gives the model enough structure to handle multi-step tasks without adding a database or background scheduler. The current plan is saved in the active session file.
 
 ## Multi-Agent Delegation
 
@@ -108,6 +129,37 @@ This is a minimal approximation of a production skill system:
 - No long-term skill memory
 
 It is enough for small project-local workflows and for demonstrating automatic skill routing.
+
+## Persistent Sessions
+
+Session files are JSON documents under:
+
+```text
+.mini-claude-code/sessions/<session>.json
+```
+
+The default session name is `default`. It can be changed with either:
+
+```bash
+npm start -- --session=my-feature
+```
+
+or:
+
+```bash
+MINI_CLAUDE_SESSION=my-feature npm start
+```
+
+The saved payload contains:
+
+- provider and model metadata
+- workspace path
+- conversation messages
+- active skill names
+- current task plan
+- token totals
+
+API keys are never written to session files. The local `.mini-claude-code/` directory is listed in `.gitignore`.
 
 ## Tool Set
 
@@ -237,6 +289,7 @@ Environment variables:
 - `MINI_CLAUDE_BASE_URL`: optional OpenAI-compatible base URL
 - `MINI_CLAUDE_MODEL`: defaults by provider
 - `MINI_CLAUDE_MAX_TOKENS`: defaults to `4096`
+- `MINI_CLAUDE_SESSION`: defaults to `default`
 - `MINI_CLAUDE_SANDBOX`: defaults to `workspace-write`
 - `MINI_CLAUDE_ALLOWED_COMMANDS`: optional command prefix allowlist
 - `MINI_CLAUDE_READ_MAX_CHARS`: defaults to `12000`
@@ -244,13 +297,12 @@ Environment variables:
 CLI flags:
 
 - `--yes` or `-y`: auto-approve writes and commands
+- `--session <name>` or `--session=<name>`: choose a persistent session file
 
 ## Deliberate Omissions
 
 This project is intentionally minimal. It does not yet include:
 
-- Streaming responses
-- Persistent conversations
 - Git-aware patch generation
 - Multi-file diff preview
 - Structured approvals

@@ -16,6 +16,9 @@ const MODEL_TIMEOUT_MS = Number(process.env.MINI_CLAUDE_TIMEOUT_MS || 120000);
 const WORKSPACE = process.cwd();
 const AUTO_YES = process.argv.includes("--yes") || process.argv.includes("-y");
 const SANDBOX_MODE = readFlag("--sandbox") || process.env.MINI_CLAUDE_SANDBOX || "workspace-write";
+const SESSION_ID = readFlag("--session") || process.env.MINI_CLAUDE_SESSION || "default";
+const SESSION_DIR = path.join(WORKSPACE, ".mini-claude-code", "sessions");
+const SESSION_FILE = path.join(SESSION_DIR, `${sanitizeSessionName(SESSION_ID)}.json`);
 const ALLOWED_COMMANDS = readAllowedCommands();
 
 const rl = readline.createInterface({ input, output });
@@ -276,11 +279,12 @@ function printBanner() {
   console.log(`Provider: ${PROVIDER}`);
   console.log(`Model: ${MODEL}`);
   console.log(`Sandbox: ${SANDBOX_MODE}`);
+  console.log(`Session: ${SESSION_ID}`);
   if (ALLOWED_COMMANDS.length > 0) {
     console.log(`Allowed commands: ${ALLOWED_COMMANDS.join(", ")}`);
   }
   console.log(`Skills: ${skills.length ? skills.map((skill) => skill.name).join(", ") : "none"}`);
-  console.log("Type /exit to quit.\n");
+  console.log("Type /new to start a fresh session, /exit to quit.\n");
 }
 
 async function main() {
@@ -301,13 +305,38 @@ async function main() {
     return;
   }
 
+  const session = await loadSession();
+  restoreSessionState(session);
   printBanner();
-  const messages = [];
+  if (session.warning) {
+    console.warn(`[session] ${session.warning}`);
+  } else if (session.restored) {
+    console.log(`[session] restored ${session.messages.length} messages from ${path.relative(WORKSPACE, SESSION_FILE)}\n`);
+  }
+  const messages = session.messages;
 
   while (true) {
-    const text = await rl.question("> ");
+    const text = await askPrompt();
+    if (text === null) {
+      await saveSession(messages);
+      break;
+    }
     if (!text.trim()) continue;
-    if (["/exit", "/quit"].includes(text.trim())) break;
+    if (["/exit", "/quit"].includes(text.trim())) {
+      await saveSession(messages);
+      break;
+    }
+    if (["/new", "/clear"].includes(text.trim())) {
+      messages.splice(0, messages.length);
+      activeSkillNames.clear();
+      taskPlan.splice(0, taskPlan.length);
+      tokenTotals.input = 0;
+      tokenTotals.output = 0;
+      tokenTotals.total = 0;
+      await saveSession(messages);
+      console.log(`[session] cleared ${SESSION_ID}\n`);
+      continue;
+    }
 
     const matchedSkills = matchSkills(text).filter((skill) => !activeSkillNames.has(skill.name));
     if (matchedSkills.length > 0) {
@@ -320,24 +349,40 @@ async function main() {
     }
 
     messages.push({ role: "user", content: text });
+    await saveSession(messages);
     await runAssistantTurn(messages);
+    await saveSession(messages);
   }
 
   rl.close();
 }
 
+async function askPrompt() {
+  try {
+    return await rl.question("> ");
+  } catch (error) {
+    if (error.code === "ERR_USE_AFTER_CLOSE" || error.message === "readline was closed") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function runAssistantTurn(messages) {
   while (true) {
-    const response = await withModelSpinner("Thinking", () => callModel(messages));
+    const response = await callModel(messages);
+    const detail = recordTokenUsage(response.usage);
+    console.log(`[ok] Thinking${detail ? ` - ${detail}` : ""}`);
     const assistantMessage = { role: "assistant", content: response.content };
     if (response.reasoningContent !== undefined) {
       assistantMessage.reasoning_content = response.reasoningContent;
     }
     messages.push(assistantMessage);
+    await saveSession(messages);
 
     const toolUses = response.content.filter((block) => block.type === "tool_use");
     for (const block of response.content) {
-      if (block.type === "text" && block.text.trim()) {
+      if (block.type === "text" && block.text.trim() && !response.printedText) {
         console.log(`\n${block.text}\n`);
       }
     }
@@ -356,7 +401,66 @@ async function runAssistantTurn(messages) {
     }
 
     messages.push({ role: "user", content: results });
+    await saveSession(messages);
   }
+}
+
+async function loadSession() {
+  try {
+    const raw = await fs.readFile(SESSION_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      restored: true,
+      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+      activeSkillNames: Array.isArray(parsed.activeSkillNames) ? parsed.activeSkillNames : [],
+      taskPlan: Array.isArray(parsed.taskPlan) ? parsed.taskPlan : [],
+      tokenTotals: parsed.tokenTotals || null
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { restored: false, messages: [] };
+    }
+    return {
+      restored: false,
+      messages: [],
+      warning: `could not load ${path.relative(WORKSPACE, SESSION_FILE)}: ${error.message}`
+    };
+  }
+}
+
+function restoreSessionState(session) {
+  for (const name of session.activeSkillNames || []) {
+    activeSkillNames.add(name);
+  }
+
+  if (Array.isArray(session.taskPlan)) {
+    taskPlan.splice(0, taskPlan.length, ...session.taskPlan);
+  }
+
+  if (session.tokenTotals) {
+    tokenTotals.input = Number(session.tokenTotals.input || 0);
+    tokenTotals.output = Number(session.tokenTotals.output || 0);
+    tokenTotals.total = Number(session.tokenTotals.total || 0);
+  }
+}
+
+async function saveSession(messages) {
+  const payload = {
+    version: 1,
+    provider: PROVIDER,
+    model: MODEL,
+    workspace: WORKSPACE,
+    sessionId: SESSION_ID,
+    updatedAt: new Date().toISOString(),
+    messages,
+    activeSkillNames: [...activeSkillNames],
+    taskPlan,
+    tokenTotals
+  };
+  await fs.mkdir(SESSION_DIR, { recursive: true });
+  const tmpFile = `${SESSION_FILE}.tmp`;
+  await fs.writeFile(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await fs.rename(tmpFile, SESSION_FILE);
 }
 
 async function withSpinner(text, action) {
@@ -387,11 +491,19 @@ async function withModelSpinner(text, action) {
 }
 
 async function callModel(messages, options = {}) {
-  if (PROVIDER === "anthropic") {
-    return callAnthropic(messages, options);
+  if (options.stream === false) {
+    if (PROVIDER === "anthropic") {
+      return callAnthropic(messages, options);
+    }
+
+    return callOpenAICompatible(messages, options);
   }
 
-  return callOpenAICompatible(messages, options);
+  if (PROVIDER === "anthropic") {
+    return callAnthropicStream(messages, options);
+  }
+
+  return callOpenAICompatibleStream(messages, options);
 }
 
 async function callAnthropic(messages, options = {}) {
@@ -399,7 +511,7 @@ async function callAnthropic(messages, options = {}) {
     model: MODEL,
     max_tokens: MAX_TOKENS,
     system: options.system || systemPrompt,
-    messages
+    messages: toAnthropicMessages(messages)
   };
   const activeTools = options.tools ?? tools;
   if (activeTools.length > 0) body.tools = activeTools;
@@ -466,6 +578,206 @@ async function callOpenAICompatible(messages, options = {}) {
   };
 }
 
+async function callAnthropicStream(messages, options = {}) {
+  const body = {
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    system: options.system || systemPrompt,
+    messages: toAnthropicMessages(messages),
+    stream: true
+  };
+  const activeTools = options.tools ?? tools;
+  if (activeTools.length > 0) body.tools = activeTools;
+
+  const res = await fetchStreaming(API_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": API_KEY,
+      "anthropic-version": API_VERSION
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    res.cancelTimeout?.();
+    throw new Error(`Anthropic API error ${res.status}: ${body}`);
+  }
+
+  const state = {
+    content: [],
+    usage: {},
+    printedText: false
+  };
+
+  processThinkingStart();
+  await readSSE(res, ({ data }) => {
+    if (!data) return;
+    const event = JSON.parse(data);
+
+    if (event.type === "message_start") {
+      state.usage = { ...state.usage, ...(event.message?.usage || {}) };
+      return;
+    }
+
+    if (event.type === "content_block_start") {
+      const block = event.content_block || {};
+      if (block.type === "text") {
+        state.content[event.index] = { type: "text", text: "" };
+      } else if (block.type === "tool_use") {
+        state.content[event.index] = {
+          type: "tool_use",
+          id: block.id,
+          name: block.name,
+          input: {},
+          inputJson: ""
+        };
+      }
+      return;
+    }
+
+    if (event.type === "content_block_delta") {
+      const block = state.content[event.index];
+      const delta = event.delta || {};
+      if (delta.type === "text_delta" && block?.type === "text") {
+        streamText(delta.text || "", state);
+      } else if (delta.type === "input_json_delta" && block?.type === "tool_use") {
+        block.inputJson += delta.partial_json || "";
+      }
+      return;
+    }
+
+    if (event.type === "content_block_stop") {
+      const block = state.content[event.index];
+      if (block?.type === "tool_use") {
+        block.input = parseToolArguments(block.inputJson);
+        delete block.inputJson;
+      }
+      return;
+    }
+
+    if (event.type === "message_delta") {
+      state.usage = { ...state.usage, ...(event.usage || {}) };
+    }
+  });
+  processThinkingEnd(state);
+
+  const content = state.content.filter(Boolean);
+  return {
+    content: content.length > 0 ? content : [{ type: "text", text: "" }],
+    usage: normalizeAnthropicUsage(state.usage),
+    printedText: state.printedText
+  };
+}
+
+async function callOpenAICompatibleStream(messages, options = {}) {
+  const activeTools = options.tools ?? tools;
+  const body = {
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    stream: true,
+    stream_options: { include_usage: true },
+    messages: toOpenAIMessages(messages, options.system || systemPrompt)
+  };
+
+  if (activeTools.length > 0) {
+    body.tools = activeTools.map(toOpenAITool);
+    body.tool_choice = "auto";
+  }
+
+  const endpoint = `${API_URL.replace(/\/$/, "")}/chat/completions`;
+  let res = await fetchStreaming(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${API_KEY}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.text();
+    res.cancelTimeout?.();
+    if (errorBody.includes("stream_options")) {
+      delete body.stream_options;
+      res = await fetchStreaming(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${API_KEY}`
+        },
+        body: JSON.stringify(body)
+      });
+    } else {
+      throw new Error(`${PROVIDER} API error ${res.status}: ${errorBody}`);
+    }
+  }
+
+  if (!res.ok) {
+    const errorBody = await res.text();
+    res.cancelTimeout?.();
+    throw new Error(`${PROVIDER} API error ${res.status}: ${errorBody}`);
+  }
+
+  const state = {
+    text: "",
+    reasoningContent: "",
+    toolCalls: new Map(),
+    usage: null,
+    printedText: false
+  };
+
+  processThinkingStart();
+  await readSSE(res, ({ data }) => {
+    if (!data) return;
+    const chunk = JSON.parse(data);
+    if (chunk.usage) state.usage = chunk.usage;
+
+    for (const choice of chunk.choices || []) {
+      const delta = choice.delta || {};
+      if (delta.content) {
+        streamText(delta.content, state);
+      }
+      if (delta.reasoning_content) {
+        state.reasoningContent += delta.reasoning_content;
+      }
+
+      for (const call of delta.tool_calls || []) {
+        const index = call.index ?? state.toolCalls.size;
+        const current = state.toolCalls.get(index) || {
+          id: "",
+          name: "",
+          arguments: ""
+        };
+        if (call.id) current.id = call.id;
+        if (call.function?.name) current.name += call.function.name;
+        if (call.function?.arguments) current.arguments += call.function.arguments;
+        state.toolCalls.set(index, current);
+      }
+    }
+  });
+  processThinkingEnd(state);
+
+  const content = [];
+  if (state.text.trim()) content.push({ type: "text", text: state.text });
+  for (const call of [...state.toolCalls.entries()].sort((a, b) => a[0] - b[0]).map((entry) => entry[1])) {
+    content.push({
+      type: "tool_use",
+      id: call.id || `tool_${Math.random().toString(16).slice(2)}`,
+      name: call.name,
+      input: parseToolArguments(call.arguments)
+    });
+  }
+
+  return {
+    content: content.length > 0 ? content : [{ type: "text", text: "" }],
+    reasoningContent: state.reasoningContent,
+    usage: normalizeOpenAIUsage(state.usage),
+    printedText: state.printedText
+  };
+}
+
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
@@ -482,9 +794,91 @@ async function fetchWithTimeout(url, options) {
   }
 }
 
-function normalizeAnthropicUsage(usage = {}) {
+async function fetchStreaming(url, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    res.cancelTimeout = () => clearTimeout(timeout);
+    return res;
+  } catch (error) {
+    clearTimeout(timeout);
+    if (error.name === "AbortError") {
+      throw new Error(`Model request timed out after ${Math.round(MODEL_TIMEOUT_MS / 1000)}s`);
+    }
+    throw error;
+  }
+}
+
+async function readSSE(res, onEvent) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  if (!res.body) throw new Error("Model API returned an empty streaming response body.");
+
+  try {
+    for await (const chunk of res.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+      let separator = buffer.indexOf("\n\n");
+      while (separator >= 0) {
+        const raw = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        const event = parseSSEEvent(raw);
+        if (event.data === "[DONE]") return;
+        onEvent(event);
+        separator = buffer.indexOf("\n\n");
+      }
+    }
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Model request timed out after ${Math.round(MODEL_TIMEOUT_MS / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    res.cancelTimeout?.();
+  }
+}
+
+function parseSSEEvent(raw) {
+  const event = { event: "", data: "" };
+  const dataLines = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith("event:")) event.event = line.slice(6).trim();
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  }
+  event.data = dataLines.join("\n");
+  return event;
+}
+
+function processThinkingStart() {
+  console.log(`[stream] Thinking - ${formatTokenTotals()}`);
+}
+
+function processThinkingEnd(state) {
+  if (state.printedText) output.write("\n");
+}
+
+function streamText(text, state) {
+  if (!text) return;
+  if (!state.printedText) {
+    output.write("\n");
+    state.printedText = true;
+  }
+  output.write(text);
+  if (Array.isArray(state.content)) {
+    const block = state.content.findLast((item) => item?.type === "text");
+    if (block) block.text += text;
+  } else {
+    state.text += text;
+  }
+}
+
+function normalizeAnthropicUsage(usage) {
+  if (!usage) return null;
   const input = Number(usage.input_tokens || 0);
   const outputTokens = Number(usage.output_tokens || 0);
+  if (input === 0 && outputTokens === 0) return null;
   return {
     input,
     output: outputTokens,
@@ -492,9 +886,11 @@ function normalizeAnthropicUsage(usage = {}) {
   };
 }
 
-function normalizeOpenAIUsage(usage = {}) {
+function normalizeOpenAIUsage(usage) {
+  if (!usage) return null;
   const input = Number(usage.prompt_tokens || usage.input_tokens || 0);
   const outputTokens = Number(usage.completion_tokens || usage.output_tokens || 0);
+  if (input === 0 && outputTokens === 0 && !usage.total_tokens) return null;
   return {
     input,
     output: outputTokens,
@@ -576,6 +972,13 @@ function toOpenAIMessages(messages, system) {
   }
 
   return converted;
+}
+
+function toAnthropicMessages(messages) {
+  return messages.map((message) => ({
+    role: message.role,
+    content: message.content
+  }));
 }
 
 function toOpenAITool(tool) {
@@ -867,7 +1270,8 @@ async function delegateAgentTool({ role, task, context = "" }) {
     }
   ], {
     system: `${agentPrompt}\n\nWorkspace: ${WORKSPACE}`,
-    tools: []
+    tools: [],
+    stream: false
   }));
 
   const text = response.content
@@ -1033,6 +1437,13 @@ function readFlag(name) {
   const index = process.argv.indexOf(name);
   if (index >= 0 && process.argv[index + 1]) return process.argv[index + 1];
   return "";
+}
+
+function sanitizeSessionName(name) {
+  return String(name || "default")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "default";
 }
 
 function readApiKey() {

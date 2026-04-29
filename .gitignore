@@ -1,4 +1,5 @@
 node_modules/
+.mini-claude-code/
 .env
 .env.local
 .DS_Store
