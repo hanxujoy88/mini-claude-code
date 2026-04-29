@@ -48,6 +48,8 @@ For OpenAI-compatible providers such as Moonshot / Kimi, the adapter converts:
 
 This keeps the agent loop provider-agnostic while preserving one implementation of local tools.
 
+The adapter also normalizes token usage into `{ input, output, total }`. After each model call, the CLI prints the current call's token usage plus accumulated session totals.
+
 ## Task Planning
 
 The current task plan is stored in memory as:

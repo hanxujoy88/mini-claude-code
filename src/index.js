@@ -19,6 +19,11 @@ const ALLOWED_COMMANDS = readAllowedCommands();
 
 const rl = readline.createInterface({ input, output });
 const taskPlan = [];
+const tokenTotals = {
+  input: 0,
+  output: 0,
+  total: 0
+};
 
 const agents = {
   planner: "You are the Planner agent. Break ambiguous coding work into concise, ordered steps. Do not edit files. Focus on sequencing, risks, and test strategy.",
@@ -270,6 +275,7 @@ async function main() {
 async function runAssistantTurn(messages) {
   while (true) {
     const response = await withSpinner("Thinking", () => callModel(messages));
+    printTokenUsage(response.usage);
     const assistantMessage = { role: "assistant", content: response.content };
     if (response.reasoningContent !== undefined) {
       assistantMessage.reasoning_content = response.reasoningContent;
@@ -346,7 +352,11 @@ async function callAnthropic(messages, options = {}) {
     throw new Error(`Anthropic API error ${res.status}: ${body}`);
   }
 
-  return res.json();
+  const data = await res.json();
+  return {
+    ...data,
+    usage: normalizeAnthropicUsage(data.usage)
+  };
 }
 
 async function callOpenAICompatible(messages, options = {}) {
@@ -384,8 +394,42 @@ async function callOpenAICompatible(messages, options = {}) {
 
   return {
     content: fromOpenAIMessage(message),
-    reasoningContent: message.reasoning_content || ""
+    reasoningContent: message.reasoning_content || "",
+    usage: normalizeOpenAIUsage(data.usage)
   };
+}
+
+function normalizeAnthropicUsage(usage = {}) {
+  const input = Number(usage.input_tokens || 0);
+  const outputTokens = Number(usage.output_tokens || 0);
+  return {
+    input,
+    output: outputTokens,
+    total: input + outputTokens
+  };
+}
+
+function normalizeOpenAIUsage(usage = {}) {
+  const input = Number(usage.prompt_tokens || usage.input_tokens || 0);
+  const outputTokens = Number(usage.completion_tokens || usage.output_tokens || 0);
+  return {
+    input,
+    output: outputTokens,
+    total: Number(usage.total_tokens || input + outputTokens)
+  };
+}
+
+function printTokenUsage(usage) {
+  if (!usage) return;
+
+  tokenTotals.input += usage.input;
+  tokenTotals.output += usage.output;
+  tokenTotals.total += usage.total;
+
+  console.log(
+    `[tokens] input ${usage.input}, output ${usage.output}, total ${usage.total} ` +
+    `(session input ${tokenTotals.input}, output ${tokenTotals.output}, total ${tokenTotals.total})`
+  );
 }
 
 function toOpenAIMessages(messages, system) {
@@ -675,6 +719,7 @@ async function delegateAgentTool({ role, task, context = "" }) {
     system: `${agentPrompt}\n\nWorkspace: ${WORKSPACE}`,
     tools: []
   }));
+  printTokenUsage(response.usage);
 
   const text = response.content
     .filter((block) => block.type === "text")
