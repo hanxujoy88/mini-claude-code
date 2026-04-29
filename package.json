@@ -1,0 +1,17 @@
+{
+  "name": "mini-claude-code",
+  "version": "0.1.0",
+  "description": "A tiny Claude Code-style terminal coding assistant.",
+  "type": "module",
+  "bin": {
+    "mini-claude-code": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
