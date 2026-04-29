@@ -12,6 +12,7 @@ const MODEL = process.env.MINI_CLAUDE_MODEL || defaultModelForProvider(PROVIDER)
 const API_KEY = readApiKey();
 const API_URL = readApiUrl();
 const MAX_TOKENS = Number(process.env.MINI_CLAUDE_MAX_TOKENS || 4096);
+const MODEL_TIMEOUT_MS = Number(process.env.MINI_CLAUDE_TIMEOUT_MS || 120000);
 const WORKSPACE = process.cwd();
 const AUTO_YES = process.argv.includes("--yes") || process.argv.includes("-y");
 const SANDBOX_MODE = readFlag("--sandbox") || process.env.MINI_CLAUDE_SANDBOX || "workspace-write";
@@ -42,11 +43,13 @@ class Spinner {
     this.timer = null;
     this.enabled = Boolean(output.isTTY);
     this.lastLength = 0;
+    this.startedAt = 0;
   }
 
   start() {
+    this.startedAt = Date.now();
     if (!this.enabled) {
-      const detail = this.detail();
+      const detail = this.detail(this);
       console.log(`[wait] ${this.text}${detail ? ` - ${detail}` : ""}`);
       return;
     }
@@ -72,10 +75,15 @@ class Spinner {
   }
 
   render(frame) {
-    const detail = this.detail();
+    const detail = this.detail(this);
     const message = `${frame} ${this.text}${detail ? ` - ${detail}` : ""}`;
     output.write(`\r${message}${" ".repeat(Math.max(0, this.lastLength - message.length))}`);
     this.lastLength = message.length;
+  }
+
+  elapsedSeconds() {
+    if (!this.startedAt) return 0;
+    return Math.floor((Date.now() - this.startedAt) / 1000);
   }
 }
 
@@ -350,7 +358,7 @@ async function withSpinner(text, action) {
 }
 
 async function withModelSpinner(text, action) {
-  const spinner = new Spinner(text, { detail: formatTokenTotals });
+  const spinner = new Spinner(text, { detail: formatThinkingDetail });
   spinner.start();
   try {
     const result = await action();
@@ -381,7 +389,7 @@ async function callAnthropic(messages, options = {}) {
   const activeTools = options.tools ?? tools;
   if (activeTools.length > 0) body.tools = activeTools;
 
-  const res = await fetch(API_URL, {
+  const res = await fetchWithTimeout(API_URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -416,7 +424,7 @@ async function callOpenAICompatible(messages, options = {}) {
     body.tool_choice = "auto";
   }
 
-  const res = await fetch(`${API_URL.replace(/\/$/, "")}/chat/completions`, {
+  const res = await fetchWithTimeout(`${API_URL.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -441,6 +449,22 @@ async function callOpenAICompatible(messages, options = {}) {
     reasoningContent: message.reasoning_content || "",
     usage: normalizeOpenAIUsage(data.usage)
   };
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MODEL_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Model request timed out after ${Math.round(MODEL_TIMEOUT_MS / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function normalizeAnthropicUsage(usage = {}) {
@@ -475,6 +499,10 @@ function recordTokenUsage(usage) {
 
 function formatTokenTotals() {
   return `session ${formatNumber(tokenTotals.total)} tokens`;
+}
+
+function formatThinkingDetail(spinner) {
+  return `elapsed ${spinner.elapsedSeconds()}s, ${formatTokenTotals()}`;
 }
 
 function formatNumber(value) {

@@ -198,5 +198,6 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 | `MINI_CLAUDE_BASE_URL` | provider default | OpenAI-compatible base URL |
 | `MINI_CLAUDE_MODEL` | provider default | Model name |
 | `MINI_CLAUDE_MAX_TOKENS` | `4096` | Max output tokens per API call |
+| `MINI_CLAUDE_TIMEOUT_MS` | `120000` | Model request timeout in milliseconds |
 | `MINI_CLAUDE_SANDBOX` | `workspace-write` | Sandbox mode, e.g. `read-only` |
 | `MINI_CLAUDE_ALLOWED_COMMANDS` | empty | Optional comma-separated command allowlist |
