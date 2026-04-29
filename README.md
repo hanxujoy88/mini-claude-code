@@ -50,6 +50,20 @@ export MINI_CLAUDE_API_KEY="sk-..."
 npm start
 ```
 
+Or use the helper script:
+
+```bash
+cp .env.example .env.local
+# edit .env.local and set MINI_CLAUDE_API_KEY
+./scripts/start-kimi.sh
+```
+
+You can also pass the key for one run:
+
+```bash
+MINI_CLAUDE_API_KEY="sk-..." ./scripts/start-kimi.sh
+```
+
 Use a different model:
 
 ```bash
