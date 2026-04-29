@@ -235,7 +235,11 @@ async function main() {
 async function runAssistantTurn(messages) {
   while (true) {
     const response = await callModel(messages);
-    messages.push({ role: "assistant", content: response.content });
+    const assistantMessage = { role: "assistant", content: response.content };
+    if (response.reasoningContent !== undefined) {
+      assistantMessage.reasoning_content = response.reasoningContent;
+    }
+    messages.push(assistantMessage);
 
     const toolUses = response.content.filter((block) => block.type === "tool_use");
     for (const block of response.content) {
@@ -330,7 +334,10 @@ async function callOpenAICompatible(messages, options = {}) {
     throw new Error(`${PROVIDER} API returned no message.`);
   }
 
-  return { content: fromOpenAIMessage(message) };
+  return {
+    content: fromOpenAIMessage(message),
+    reasoningContent: message.reasoning_content || ""
+  };
 }
 
 function toOpenAIMessages(messages, system) {
@@ -368,7 +375,10 @@ function toOpenAIMessages(messages, system) {
         }));
 
       const convertedMessage = { role: "assistant", content: text || null };
-      if (toolCalls.length > 0) convertedMessage.tool_calls = toolCalls;
+      if (toolCalls.length > 0) {
+        convertedMessage.tool_calls = toolCalls;
+        convertedMessage.reasoning_content = message.reasoning_content || "";
+      }
       converted.push(convertedMessage);
       continue;
     }
