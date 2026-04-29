@@ -23,7 +23,7 @@ This project is an independent learning implementation. It is not affiliated wit
 - In-memory task planning
 - Small multi-agent delegation system
 - Terminal feedback spinners while the model thinks and tools run
-- Token usage feedback after each model call, with session totals
+- Token usage in the `Thinking` status line after each model call, with session totals
 - Workspace sandboxing to the current project directory
 - Read-only sandbox mode
 - Optional command allowlist

@@ -33,24 +33,28 @@ const agents = {
 };
 
 class Spinner {
-  constructor(text) {
+  constructor(text, options = {}) {
     this.text = text;
+    this.detail = options.detail || (() => "");
     this.frames = ["-", "\\", "|", "/"];
     this.index = 0;
     this.timer = null;
     this.enabled = Boolean(output.isTTY);
+    this.lastLength = 0;
   }
 
   start() {
     if (!this.enabled) {
-      console.log(`[wait] ${this.text}`);
+      const detail = this.detail();
+      console.log(`[wait] ${this.text}${detail ? ` - ${detail}` : ""}`);
       return;
     }
 
+    this.render(this.frames[0]);
     this.timer = setInterval(() => {
       const frame = this.frames[this.index % this.frames.length];
       this.index += 1;
-      output.write(`\r${frame} ${this.text}`);
+      this.render(frame);
     }, 100);
   }
 
@@ -63,7 +67,14 @@ class Spinner {
       return;
     }
 
-    output.write(`\r${" ".repeat(this.text.length + 8)}\r${message}\n`);
+    output.write(`\r${message}${" ".repeat(Math.max(0, this.lastLength - message.length))}\n`);
+  }
+
+  render(frame) {
+    const detail = this.detail();
+    const message = `${frame} ${this.text}${detail ? ` - ${detail}` : ""}`;
+    output.write(`\r${message}${" ".repeat(Math.max(0, this.lastLength - message.length))}`);
+    this.lastLength = message.length;
   }
 }
 
@@ -274,8 +285,7 @@ async function main() {
 
 async function runAssistantTurn(messages) {
   while (true) {
-    const response = await withSpinner("Thinking", () => callModel(messages));
-    printTokenUsage(response.usage);
+    const response = await withModelSpinner("Thinking", () => callModel(messages));
     const assistantMessage = { role: "assistant", content: response.content };
     if (response.reasoningContent !== undefined) {
       assistantMessage.reasoning_content = response.reasoningContent;
@@ -312,6 +322,20 @@ async function withSpinner(text, action) {
   try {
     const result = await action();
     spinner.stop("ok");
+    return result;
+  } catch (error) {
+    spinner.stop("fail", error.message);
+    throw error;
+  }
+}
+
+async function withModelSpinner(text, action) {
+  const spinner = new Spinner(text, { detail: formatTokenTotals });
+  spinner.start();
+  try {
+    const result = await action();
+    const detail = recordTokenUsage(result.usage);
+    spinner.stop("ok", detail);
     return result;
   } catch (error) {
     spinner.stop("fail", error.message);
@@ -419,17 +443,22 @@ function normalizeOpenAIUsage(usage = {}) {
   };
 }
 
-function printTokenUsage(usage) {
-  if (!usage) return;
+function recordTokenUsage(usage) {
+  if (!usage) return "";
 
   tokenTotals.input += usage.input;
   tokenTotals.output += usage.output;
   tokenTotals.total += usage.total;
 
-  console.log(
-    `[tokens] input ${usage.input}, output ${usage.output}, total ${usage.total} ` +
-    `(session input ${tokenTotals.input}, output ${tokenTotals.output}, total ${tokenTotals.total})`
-  );
+  return `tokens ${formatNumber(usage.input)} in, ${formatNumber(usage.output)} out, ${formatNumber(usage.total)} total | ${formatTokenTotals()}`;
+}
+
+function formatTokenTotals() {
+  return `session ${formatNumber(tokenTotals.total)} tokens`;
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString("en-US");
 }
 
 function toOpenAIMessages(messages, system) {
@@ -706,7 +735,7 @@ async function delegateAgentTool({ role, task, context = "" }) {
     return { ok: false, error: `Unknown agent role: ${role}` };
   }
 
-  const response = await withSpinner(`Delegating to ${role}`, () => callModel([
+  const response = await withModelSpinner(`Delegating to ${role}`, () => callModel([
     {
       role: "user",
       content: [
@@ -719,7 +748,6 @@ async function delegateAgentTool({ role, task, context = "" }) {
     system: `${agentPrompt}\n\nWorkspace: ${WORKSPACE}`,
     tools: []
   }));
-  printTokenUsage(response.usage);
 
   const text = response.content
     .filter((block) => block.type === "text")
