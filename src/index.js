@@ -26,6 +26,8 @@ const tokenTotals = {
   total: 0
 };
 const skills = await loadSkills();
+const activeSkillNames = new Set();
+const DEFAULT_READ_MAX_CHARS = Number(process.env.MINI_CLAUDE_READ_MAX_CHARS || 12000);
 
 const agents = {
   planner: "You are the Planner agent. Break ambiguous coding work into concise, ordered steps. Do not edit files. Focus on sequencing, risks, and test strategy.",
@@ -108,13 +110,25 @@ const tools = [
   },
   {
     name: "read_file",
-    description: "Read a UTF-8 text file from the workspace.",
+    description: "Read a UTF-8 text file from the workspace. Prefer start_line/end_line ranges for large files or targeted review; full reads are capped and may be truncated.",
     input_schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description: "File path relative to the workspace root."
+        },
+        start_line: {
+          type: "number",
+          description: "Optional 1-based start line."
+        },
+        end_line: {
+          type: "number",
+          description: "Optional 1-based end line, inclusive."
+        },
+        max_chars: {
+          type: "number",
+          description: "Maximum characters to return. Defaults to MINI_CLAUDE_READ_MAX_CHARS or 12000."
         }
       },
       required: ["path"]
@@ -295,9 +309,10 @@ async function main() {
     if (!text.trim()) continue;
     if (["/exit", "/quit"].includes(text.trim())) break;
 
-    const matchedSkills = matchSkills(text);
+    const matchedSkills = matchSkills(text).filter((skill) => !activeSkillNames.has(skill.name));
     if (matchedSkills.length > 0) {
       console.log(`[skills] ${matchedSkills.map((skill) => skill.name).join(", ")}`);
+      for (const skill of matchedSkills) activeSkillNames.add(skill.name);
       messages.push({
         role: "user",
         content: buildSkillContext(matchedSkills)
@@ -668,12 +683,58 @@ async function walk(dir, found, maxFiles) {
   }
 }
 
-async function readFileTool({ path: filePath }) {
+async function readFileTool({ path: filePath, start_line, end_line, max_chars }) {
   return withSpinner(`Reading ${filePath}`, async () => {
     const fullPath = resolveInsideWorkspace(filePath);
     const content = await fs.readFile(fullPath, "utf8");
-    return { ok: true, content };
+    return { ok: true, content: formatFileReadResult(filePath, content, { start_line, end_line, max_chars }) };
   });
+}
+
+function formatFileReadResult(filePath, content, options) {
+  const lines = content.split(/\r?\n/);
+  const totalLines = lines.length;
+  const requestedStart = positiveInteger(options.start_line) || 1;
+  const requestedEnd = positiveInteger(options.end_line) || totalLines;
+  const startLine = Math.min(Math.max(requestedStart, 1), totalLines);
+  const endLine = Math.min(Math.max(requestedEnd, startLine), totalLines);
+  const maxChars = positiveInteger(options.max_chars) || DEFAULT_READ_MAX_CHARS;
+  const selected = lines.slice(startLine - 1, endLine);
+
+  let usedChars = 0;
+  let truncatedByChars = false;
+  const numbered = [];
+  for (let index = 0; index < selected.length; index += 1) {
+    const lineNumber = startLine + index;
+    const line = `${lineNumber}: ${selected[index]}`;
+    if (usedChars + line.length + 1 > maxChars) {
+      truncatedByChars = true;
+      break;
+    }
+    numbered.push(line);
+    usedChars += line.length + 1;
+  }
+
+  const shownEnd = numbered.length > 0 ? startLine + numbered.length - 1 : startLine - 1;
+  const truncated = truncatedByChars || shownEnd < endLine;
+  const header = [
+    `File: ${filePath}`,
+    `Lines: ${startLine}-${shownEnd} of ${totalLines}`,
+    `Max chars: ${maxChars}`
+  ];
+
+  if (truncated) {
+    header.push(`Truncated: yes. Continue with read_file path="${filePath}" start_line=${shownEnd + 1} end_line=${endLine}.`);
+  } else {
+    header.push("Truncated: no");
+  }
+
+  return `${header.join("\n")}\n\n${numbered.join("\n")}`;
+}
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : 0;
 }
 
 async function writeFileTool({ path: filePath, content }) {

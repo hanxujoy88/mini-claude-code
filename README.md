@@ -25,6 +25,7 @@ This project is an independent learning implementation. It is not affiliated wit
 - Terminal feedback spinners while the model thinks and tools run
 - Token usage in the `Thinking` status line after each model call, with session totals
 - Auto-discovered skills from `skills/*/SKILL.md`
+- Token-conscious `read_file` with line ranges and default truncation
 - Workspace sandboxing to the current project directory
 - Read-only sandbox mode
 - Optional command allowlist
@@ -186,6 +187,23 @@ On each user request, the CLI scores the request against skill names and descrip
 
 Use `list_skills` from the assistant to inspect loaded skills.
 
+The same skill is injected only once per session to avoid repeatedly paying for identical skill instructions.
+
+### Token Controls
+
+`read_file` returns line-numbered output and defaults to a maximum of 12,000 characters. For larger files, it tells the model which line range to request next.
+
+The model can call:
+
+```json
+{
+  "path": "src/index.js",
+  "start_line": 120,
+  "end_line": 220,
+  "max_chars": 8000
+}
+```
+
 See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 
 ## Environment Variables
@@ -199,5 +217,6 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 | `MINI_CLAUDE_MODEL` | provider default | Model name |
 | `MINI_CLAUDE_MAX_TOKENS` | `4096` | Max output tokens per API call |
 | `MINI_CLAUDE_TIMEOUT_MS` | `120000` | Model request timeout in milliseconds |
+| `MINI_CLAUDE_READ_MAX_CHARS` | `12000` | Default max characters returned by `read_file` |
 | `MINI_CLAUDE_SANDBOX` | `workspace-write` | Sandbox mode, e.g. `read-only` |
 | `MINI_CLAUDE_ALLOWED_COMMANDS` | empty | Optional comma-separated command allowlist |

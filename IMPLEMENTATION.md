@@ -97,6 +97,8 @@ The body of the file is treated as instructions.
 
 For each user prompt, the CLI tokenizes the prompt and scores it against each skill's name and description. Up to two matching skills are injected before the user message as hidden contextual guidance.
 
+Each skill is injected at most once per session. This keeps recurring task prompts from repeatedly adding the same `SKILL.md` content to the conversation history.
+
 This is a minimal approximation of a production skill system:
 
 - No embeddings
@@ -123,6 +125,14 @@ Ignored directories:
 ### `read_file`
 
 Reads a UTF-8 file inside the workspace.
+
+The result is line-numbered and token-conscious:
+
+- `start_line`: optional 1-based start line
+- `end_line`: optional inclusive end line
+- `max_chars`: optional output character cap
+
+By default, `read_file` returns at most `MINI_CLAUDE_READ_MAX_CHARS` characters, defaulting to 12,000. Truncated results include a continuation hint with the next line range.
 
 ### `write_file`
 
@@ -229,6 +239,7 @@ Environment variables:
 - `MINI_CLAUDE_MAX_TOKENS`: defaults to `4096`
 - `MINI_CLAUDE_SANDBOX`: defaults to `workspace-write`
 - `MINI_CLAUDE_ALLOWED_COMMANDS`: optional command prefix allowlist
+- `MINI_CLAUDE_READ_MAX_CHARS`: defaults to `12000`
 
 CLI flags:
 
