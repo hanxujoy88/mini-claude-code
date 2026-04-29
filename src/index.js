@@ -12,8 +12,18 @@ const MODEL = process.env.MINI_CLAUDE_MODEL || "claude-3-5-sonnet-latest";
 const MAX_TOKENS = Number(process.env.MINI_CLAUDE_MAX_TOKENS || 4096);
 const WORKSPACE = process.cwd();
 const AUTO_YES = process.argv.includes("--yes") || process.argv.includes("-y");
+const SANDBOX_MODE = readFlag("--sandbox") || process.env.MINI_CLAUDE_SANDBOX || "workspace-write";
+const ALLOWED_COMMANDS = readAllowedCommands();
 
 const rl = readline.createInterface({ input, output });
+const taskPlan = [];
+
+const agents = {
+  planner: "You are the Planner agent. Break ambiguous coding work into concise, ordered steps. Do not edit files. Focus on sequencing, risks, and test strategy.",
+  implementer: "You are the Implementer agent. Propose concrete code changes and commands. Keep the plan small and aligned to the user's repository.",
+  reviewer: "You are the Reviewer agent. Look for bugs, missing tests, unsafe assumptions, and edge cases. Be direct and specific.",
+  tester: "You are the Tester agent. Design lightweight validation steps and explain what each check proves."
+};
 
 const tools = [
   {
@@ -83,6 +93,85 @@ const tools = [
       },
       required: ["command"]
     }
+  },
+  {
+    name: "create_plan",
+    description: "Create or replace the current task plan. Use this for multi-step work.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          items: { type: "string" },
+          description: "Ordered task descriptions."
+        }
+      },
+      required: ["tasks"]
+    }
+  },
+  {
+    name: "update_task",
+    description: "Update one task in the current task plan.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "number",
+          description: "Task id from the plan."
+        },
+        status: {
+          type: "string",
+          enum: ["pending", "in_progress", "completed", "blocked"],
+          description: "New task status."
+        },
+        note: {
+          type: "string",
+          description: "Optional short note."
+        }
+      },
+      required: ["id", "status"]
+    }
+  },
+  {
+    name: "list_plan",
+    description: "Show the current task plan and statuses.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: "delegate_agent",
+    description: "Ask a specialized sub-agent for bounded advice. Sub-agents cannot use tools or edit files.",
+    input_schema: {
+      type: "object",
+      properties: {
+        role: {
+          type: "string",
+          enum: ["planner", "implementer", "reviewer", "tester"],
+          description: "Specialized agent role."
+        },
+        task: {
+          type: "string",
+          description: "Specific question or task for the sub-agent."
+        },
+        context: {
+          type: "string",
+          description: "Relevant context, code snippets, logs, or plan details."
+        }
+      },
+      required: ["role", "task"]
+    }
+  },
+  {
+    name: "sandbox_status",
+    description: "Inspect the current sandbox and command policy.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: []
+    }
   }
 ];
 
@@ -91,12 +180,19 @@ const systemPrompt = `You are Mini Claude Code, a small terminal coding assistan
 You can inspect and change files in the user's current workspace using tools.
 Prefer small, clear edits. Read files before modifying them. Explain what you are doing briefly.
 Never claim you changed files unless a tool result confirms it.
+For multi-step work, create and maintain a task plan.
+Use delegate_agent when a planner, reviewer, implementer, or tester perspective would reduce risk.
+Respect the sandbox. If the sandbox blocks an action, explain the limitation and suggest the next safe step.
 The workspace root is: ${WORKSPACE}`;
 
 function printBanner() {
   console.log("Mini Claude Code");
   console.log(`Workspace: ${WORKSPACE}`);
   console.log(`Model: ${MODEL}`);
+  console.log(`Sandbox: ${SANDBOX_MODE}`);
+  if (ALLOWED_COMMANDS.length > 0) {
+    console.log(`Allowed commands: ${ALLOWED_COMMANDS.join(", ")}`);
+  }
   console.log("Type /exit to quit.\n");
 }
 
@@ -152,7 +248,16 @@ async function runAssistantTurn(messages) {
   }
 }
 
-async function callAnthropic(messages) {
+async function callAnthropic(messages, options = {}) {
+  const body = {
+    model: MODEL,
+    max_tokens: MAX_TOKENS,
+    system: options.system || systemPrompt,
+    messages
+  };
+  const activeTools = options.tools ?? tools;
+  if (activeTools.length > 0) body.tools = activeTools;
+
   const res = await fetch(API_URL, {
     method: "POST",
     headers: {
@@ -160,13 +265,7 @@ async function callAnthropic(messages) {
       "x-api-key": process.env.ANTHROPIC_API_KEY,
       "anthropic-version": API_VERSION
     },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      system: systemPrompt,
-      tools,
-      messages
-    })
+    body: JSON.stringify(body)
   });
 
   if (!res.ok) {
@@ -183,6 +282,11 @@ async function runTool(name, input) {
     if (name === "read_file") return await readFileTool(input);
     if (name === "write_file") return await writeFileTool(input);
     if (name === "run_command") return await runCommandTool(input);
+    if (name === "create_plan") return createPlanTool(input);
+    if (name === "update_task") return updateTaskTool(input);
+    if (name === "list_plan") return listPlanTool();
+    if (name === "delegate_agent") return await delegateAgentTool(input);
+    if (name === "sandbox_status") return sandboxStatusTool();
     return { ok: false, error: `Unknown tool: ${name}` };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -223,6 +327,10 @@ async function readFileTool({ path: filePath }) {
 }
 
 async function writeFileTool({ path: filePath, content }) {
+  if (SANDBOX_MODE === "read-only") {
+    return { ok: false, error: "Sandbox is read-only; write_file is disabled." };
+  }
+
   const fullPath = resolveInsideWorkspace(filePath);
   const relative = path.relative(WORKSPACE, fullPath);
 
@@ -236,8 +344,19 @@ async function writeFileTool({ path: filePath, content }) {
 }
 
 async function runCommandTool({ command, timeout_ms = 30000 }) {
+  if (SANDBOX_MODE === "read-only") {
+    return { ok: false, error: "Sandbox is read-only; run_command is disabled." };
+  }
+
   if (isDangerousCommand(command)) {
     return { ok: false, error: `Blocked dangerous command: ${command}` };
+  }
+
+  if (ALLOWED_COMMANDS.length > 0 && !isAllowedCommand(command)) {
+    return {
+      ok: false,
+      error: `Command is not allowed by MINI_CLAUDE_ALLOWED_COMMANDS: ${command}`
+    };
   }
 
   if (!(await confirm(`Run command: ${command}?`))) {
@@ -277,6 +396,84 @@ async function runCommandTool({ command, timeout_ms = 30000 }) {
   });
 }
 
+function createPlanTool({ tasks }) {
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    return { ok: false, error: "tasks must be a non-empty array." };
+  }
+
+  taskPlan.splice(0, taskPlan.length, ...tasks.map((text, index) => ({
+    id: index + 1,
+    text,
+    status: "pending",
+    note: ""
+  })));
+
+  return listPlanTool();
+}
+
+function updateTaskTool({ id, status, note = "" }) {
+  const task = taskPlan.find((item) => item.id === Number(id));
+  if (!task) return { ok: false, error: `No task with id ${id}.` };
+
+  task.status = status;
+  task.note = note;
+  return listPlanTool();
+}
+
+function listPlanTool() {
+  if (taskPlan.length === 0) {
+    return { ok: true, content: "No active task plan." };
+  }
+
+  const lines = taskPlan.map((task) => {
+    const note = task.note ? ` - ${task.note}` : "";
+    return `${task.id}. [${task.status}] ${task.text}${note}`;
+  });
+  return { ok: true, content: lines.join("\n") };
+}
+
+async function delegateAgentTool({ role, task, context = "" }) {
+  const agentPrompt = agents[role];
+  if (!agentPrompt) {
+    return { ok: false, error: `Unknown agent role: ${role}` };
+  }
+
+  const response = await callAnthropic([
+    {
+      role: "user",
+      content: [
+        `Task: ${task}`,
+        context ? `Context:\n${context}` : "",
+        "Return concise, actionable advice. Do not claim to have edited files."
+      ].filter(Boolean).join("\n\n")
+    }
+  ], {
+    system: `${agentPrompt}\n\nWorkspace: ${WORKSPACE}`,
+    tools: []
+  });
+
+  const text = response.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n")
+    .trim();
+
+  return { ok: true, content: text || "(sub-agent returned no text)" };
+}
+
+function sandboxStatusTool() {
+  const lines = [
+    `workspace: ${WORKSPACE}`,
+    `mode: ${SANDBOX_MODE}`,
+    `auto_yes: ${AUTO_YES}`,
+    `allowed_commands: ${ALLOWED_COMMANDS.length ? ALLOWED_COMMANDS.join(", ") : "(not restricted by prefix)"}`,
+    "file_policy: paths must stay inside workspace",
+    "write_policy: disabled in read-only mode; otherwise confirmation required unless --yes",
+    "command_policy: disabled in read-only mode; denylist always active; optional allowlist via MINI_CLAUDE_ALLOWED_COMMANDS"
+  ];
+  return { ok: true, content: lines.join("\n") };
+}
+
 function resolveInsideWorkspace(inputPath) {
   if (!inputPath || typeof inputPath !== "string") {
     throw new Error("Path is required.");
@@ -300,6 +497,26 @@ function isDangerousCommand(command) {
     />\s*\/dev\/sd[a-z]/
   ];
   return deny.some((pattern) => pattern.test(compact));
+}
+
+function isAllowedCommand(command) {
+  const compact = command.trim();
+  return ALLOWED_COMMANDS.some((allowed) => compact === allowed || compact.startsWith(`${allowed} `));
+}
+
+function readAllowedCommands() {
+  const raw = process.env.MINI_CLAUDE_ALLOWED_COMMANDS || "";
+  return raw.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function readFlag(name) {
+  const prefix = `${name}=`;
+  const match = process.argv.find((arg) => arg.startsWith(prefix));
+  if (match) return match.slice(prefix.length);
+
+  const index = process.argv.indexOf(name);
+  if (index >= 0 && process.argv[index + 1]) return process.argv[index + 1];
+  return "";
 }
 
 async function confirm(question) {

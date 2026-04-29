@@ -15,7 +15,16 @@ This project is an independent learning implementation. It is not affiliated wit
   - `read_file`
   - `write_file`
   - `run_command`
+  - `create_plan`
+  - `update_task`
+  - `list_plan`
+  - `delegate_agent`
+  - `sandbox_status`
+- In-memory task planning
+- Small multi-agent delegation system
 - Workspace sandboxing to the current project directory
+- Read-only sandbox mode
+- Optional command allowlist
 - Confirmation prompts before writes and commands
 - `--yes` mode for trusted automation
 
@@ -50,6 +59,18 @@ Auto-approve writes and commands:
 npm start -- --yes
 ```
 
+Run in read-only mode:
+
+```bash
+npm start -- --sandbox=read-only
+```
+
+Only allow selected command prefixes:
+
+```bash
+MINI_CLAUDE_ALLOWED_COMMANDS="npm,git,ls,pwd" npm start
+```
+
 Exit with `/exit` or `Ctrl+C`.
 
 ## Safety Model
@@ -57,8 +78,11 @@ Exit with `/exit` or `Ctrl+C`.
 Mini Claude Code is deliberately conservative:
 
 - Paths are resolved inside the current working directory.
+- `--sandbox=read-only` disables file writes and command execution.
+- Default sandbox mode is `workspace-write`.
 - `write_file` asks for confirmation unless `--yes` is used.
 - `run_command` asks for confirmation unless `--yes` is used.
+- `MINI_CLAUDE_ALLOWED_COMMANDS` can restrict command execution to comma-separated prefixes.
 - A small denylist blocks obviously destructive shell snippets such as `rm -rf /`, `git reset --hard`, and fork bombs.
 
 This is not a security sandbox. It is a teaching implementation and a compact starting point for a coding agent.
@@ -76,6 +100,27 @@ The main loop is:
 5. Send tool results back to the model.
 6. Repeat until no more tools are requested.
 
+### Task Planning
+
+The model can create and maintain an in-memory plan with:
+
+- `create_plan`: replace the current task list
+- `update_task`: mark a task as `pending`, `in_progress`, `completed`, or `blocked`
+- `list_plan`: inspect the current plan
+
+Plans are intentionally session-local and reset when the CLI exits.
+
+### Multi-Agent Delegation
+
+The `delegate_agent` tool asks a specialized model persona for advice. Available roles:
+
+- `planner`
+- `implementer`
+- `reviewer`
+- `tester`
+
+Sub-agents cannot call tools or edit files. They return text back to the main assistant, which decides what to do next.
+
 See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 
 ## Environment Variables
@@ -85,3 +130,5 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 | `ANTHROPIC_API_KEY` | required | Anthropic API key |
 | `MINI_CLAUDE_MODEL` | `claude-3-5-sonnet-latest` | Model name |
 | `MINI_CLAUDE_MAX_TOKENS` | `4096` | Max output tokens per API call |
+| `MINI_CLAUDE_SANDBOX` | `workspace-write` | Sandbox mode, e.g. `read-only` |
+| `MINI_CLAUDE_ALLOWED_COMMANDS` | empty | Optional comma-separated command allowlist |
