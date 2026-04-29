@@ -27,6 +27,41 @@ const agents = {
   tester: "You are the Tester agent. Design lightweight validation steps and explain what each check proves."
 };
 
+class Spinner {
+  constructor(text) {
+    this.text = text;
+    this.frames = ["-", "\\", "|", "/"];
+    this.index = 0;
+    this.timer = null;
+    this.enabled = Boolean(output.isTTY);
+  }
+
+  start() {
+    if (!this.enabled) {
+      console.log(`[wait] ${this.text}`);
+      return;
+    }
+
+    this.timer = setInterval(() => {
+      const frame = this.frames[this.index % this.frames.length];
+      this.index += 1;
+      output.write(`\r${frame} ${this.text}`);
+    }, 100);
+  }
+
+  stop(status = "ok", detail = "") {
+    if (this.timer) clearInterval(this.timer);
+    const message = `[${status}] ${this.text}${detail ? ` - ${detail}` : ""}`;
+
+    if (!this.enabled) {
+      console.log(message);
+      return;
+    }
+
+    output.write(`\r${" ".repeat(this.text.length + 8)}\r${message}\n`);
+  }
+}
+
 const tools = [
   {
     name: "list_files",
@@ -234,7 +269,7 @@ async function main() {
 
 async function runAssistantTurn(messages) {
   while (true) {
-    const response = await callModel(messages);
+    const response = await withSpinner("Thinking", () => callModel(messages));
     const assistantMessage = { role: "assistant", content: response.content };
     if (response.reasoningContent !== undefined) {
       assistantMessage.reasoning_content = response.reasoningContent;
@@ -252,7 +287,7 @@ async function runAssistantTurn(messages) {
 
     const results = [];
     for (const toolUse of toolUses) {
-      const result = await runTool(toolUse.name, toolUse.input || {});
+      const result = await runToolWithFeedback(toolUse.name, toolUse.input || {});
       results.push({
         type: "tool_result",
         tool_use_id: toolUse.id,
@@ -262,6 +297,19 @@ async function runAssistantTurn(messages) {
     }
 
     messages.push({ role: "user", content: results });
+  }
+}
+
+async function withSpinner(text, action) {
+  const spinner = new Spinner(text);
+  spinner.start();
+  try {
+    const result = await action();
+    spinner.stop("ok");
+    return result;
+  } catch (error) {
+    spinner.stop("fail", error.message);
+    throw error;
   }
 }
 
@@ -449,12 +497,23 @@ async function runTool(name, input) {
   }
 }
 
+async function runToolWithFeedback(name, input) {
+  console.log(`[tool] ${name}`);
+  const result = await runTool(name, input);
+  if (!result.ok) {
+    console.log(`[fail] ${name} - ${result.error}`);
+  }
+  return result;
+}
+
 async function listFiles({ dir = ".", max_files = 200 }) {
-  const root = resolveInsideWorkspace(dir);
-  const found = [];
-  await walk(root, found, Number(max_files) || 200);
-  const relative = found.map((file) => path.relative(WORKSPACE, file) || ".");
-  return { ok: true, content: relative.join("\n") || "(no files)" };
+  return withSpinner(`Listing files in ${dir}`, async () => {
+    const root = resolveInsideWorkspace(dir);
+    const found = [];
+    await walk(root, found, Number(max_files) || 200);
+    const relative = found.map((file) => path.relative(WORKSPACE, file) || ".");
+    return { ok: true, content: relative.join("\n") || "(no files)" };
+  });
 }
 
 async function walk(dir, found, maxFiles) {
@@ -477,9 +536,11 @@ async function walk(dir, found, maxFiles) {
 }
 
 async function readFileTool({ path: filePath }) {
-  const fullPath = resolveInsideWorkspace(filePath);
-  const content = await fs.readFile(fullPath, "utf8");
-  return { ok: true, content };
+  return withSpinner(`Reading ${filePath}`, async () => {
+    const fullPath = resolveInsideWorkspace(filePath);
+    const content = await fs.readFile(fullPath, "utf8");
+    return { ok: true, content };
+  });
 }
 
 async function writeFileTool({ path: filePath, content }) {
@@ -494,9 +555,11 @@ async function writeFileTool({ path: filePath, content }) {
     return { ok: false, error: "User rejected write_file." };
   }
 
-  await fs.mkdir(path.dirname(fullPath), { recursive: true });
-  await fs.writeFile(fullPath, content, "utf8");
-  return { ok: true, content: `Wrote ${relative} (${content.length} bytes).` };
+  return withSpinner(`Writing ${relative}`, async () => {
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(fullPath, content, "utf8");
+    return { ok: true, content: `Wrote ${relative} (${content.length} bytes).` };
+  });
 }
 
 async function runCommandTool({ command, timeout_ms = 30000 }) {
@@ -519,6 +582,9 @@ async function runCommandTool({ command, timeout_ms = 30000 }) {
     return { ok: false, error: "User rejected run_command." };
   }
 
+  const spinner = new Spinner(`Running ${command}`);
+  spinner.start();
+
   return new Promise((resolve) => {
     const child = spawn(command, {
       cwd: WORKSPACE,
@@ -530,6 +596,7 @@ async function runCommandTool({ command, timeout_ms = 30000 }) {
     let stderr = "";
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");
+      spinner.stop("fail", "timeout");
       resolve({ ok: false, error: `Command timed out after ${timeout_ms}ms.` });
     }, Number(timeout_ms) || 30000);
 
@@ -542,6 +609,7 @@ async function runCommandTool({ command, timeout_ms = 30000 }) {
 
     child.on("close", (code) => {
       clearTimeout(timeout);
+      spinner.stop(code === 0 ? "ok" : "fail", `exit ${code}`);
       const outputText = trimOutput([
         `exit code: ${code}`,
         stdout ? `stdout:\n${stdout}` : "",
@@ -594,7 +662,7 @@ async function delegateAgentTool({ role, task, context = "" }) {
     return { ok: false, error: `Unknown agent role: ${role}` };
   }
 
-  const response = await callModel([
+  const response = await withSpinner(`Delegating to ${role}`, () => callModel([
     {
       role: "user",
       content: [
@@ -606,7 +674,7 @@ async function delegateAgentTool({ role, task, context = "" }) {
   ], {
     system: `${agentPrompt}\n\nWorkspace: ${WORKSPACE}`,
     tools: []
-  });
+  }));
 
   const text = response.content
     .filter((block) => block.type === "text")

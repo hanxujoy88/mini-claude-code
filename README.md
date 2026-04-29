@@ -22,6 +22,7 @@ This project is an independent learning implementation. It is not affiliated wit
   - `sandbox_status`
 - In-memory task planning
 - Small multi-agent delegation system
+- Terminal feedback spinners while the model thinks and tools run
 - Workspace sandboxing to the current project directory
 - Read-only sandbox mode
 - Optional command allowlist
