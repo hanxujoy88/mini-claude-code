@@ -240,11 +240,11 @@ All file paths go through `resolveInsideWorkspace`.
 
 The function resolves a requested path against `process.cwd()` and rejects any path that escapes the workspace via `..` or an absolute path outside the root.
 
-This protects the common case of accidental edits outside the current project. It is not a hardened OS sandbox.
+This protects the common case of accidental edits outside the current project. Command execution also has an OS-level sandbox on macOS.
 
 ## Sandbox Modes
 
-Mini Claude Code now supports a small policy sandbox:
+Mini Claude Code supports an application policy sandbox:
 
 - `workspace-write` (default): files stay inside the workspace; writes and commands require confirmation unless `--yes` is set
 - `read-only`: disables `write_file` and `run_command`
@@ -260,6 +260,36 @@ or:
 ```bash
 MINI_CLAUDE_SANDBOX=read-only npm start
 ```
+
+## System Command Sandbox
+
+On macOS, `run_command` is wrapped with `/usr/bin/sandbox-exec` by default when `MINI_CLAUDE_SANDBOX=workspace-write`.
+
+The generated profile allows normal process behavior, but denies file writes unless the target is:
+
+- the current workspace
+- `/private/tmp`
+- `/tmp`
+- `/private/var/folders`
+- `/dev/null`
+
+This means a command like `echo test > ../outside.txt` is blocked by the operating system even if the shell command itself starts successfully.
+
+System sandbox behavior is controlled with:
+
+```bash
+MINI_CLAUDE_SYSTEM_SANDBOX=auto npm start
+MINI_CLAUDE_SYSTEM_SANDBOX=on npm start
+MINI_CLAUDE_SYSTEM_SANDBOX=off npm start
+```
+
+Modes:
+
+- `auto` (default): enable `sandbox-exec` on macOS in `workspace-write` mode
+- `on`: require the system sandbox and fail command execution on unsupported platforms
+- `off`: use only the application-level checks
+
+The system sandbox currently protects `run_command`. The `write_file` tool is implemented inside the Node process and continues to use strict workspace path resolution.
 
 ## Command Safety
 
@@ -291,6 +321,7 @@ Environment variables:
 - `MINI_CLAUDE_MAX_TOKENS`: defaults to `4096`
 - `MINI_CLAUDE_SESSION`: defaults to `default`
 - `MINI_CLAUDE_SANDBOX`: defaults to `workspace-write`
+- `MINI_CLAUDE_SYSTEM_SANDBOX`: defaults to `auto`
 - `MINI_CLAUDE_ALLOWED_COMMANDS`: optional command prefix allowlist
 - `MINI_CLAUDE_READ_MAX_CHARS`: defaults to `12000`
 
@@ -298,6 +329,7 @@ CLI flags:
 
 - `--yes` or `-y`: auto-approve writes and commands
 - `--session <name>` or `--session=<name>`: choose a persistent session file
+- `--system-sandbox <auto|on|off>` or `--system-sandbox=<auto|on|off>`: control OS-level command sandboxing
 
 ## Deliberate Omissions
 
@@ -306,7 +338,6 @@ This project is intentionally minimal. It does not yet include:
 - Git-aware patch generation
 - Multi-file diff preview
 - Structured approvals
-- True sandboxing
 - MCP support
 - Web search
 - Background task management

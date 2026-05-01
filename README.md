@@ -29,6 +29,7 @@ This project is an independent learning implementation. It is not affiliated wit
 - Auto-discovered skills from `skills/*/SKILL.md`
 - Token-conscious `read_file` with line ranges and default truncation
 - Workspace sandboxing to the current project directory
+- macOS system sandbox for command execution
 - Read-only sandbox mode
 - Optional command allowlist
 - Confirmation prompts before writes and commands
@@ -105,6 +106,12 @@ Run in read-only mode:
 npm start -- --sandbox=read-only
 ```
 
+Disable the macOS system command sandbox:
+
+```bash
+npm start -- --system-sandbox=off
+```
+
 Only allow selected command prefixes:
 
 ```bash
@@ -138,12 +145,14 @@ Mini Claude Code is deliberately conservative:
 - Paths are resolved inside the current working directory.
 - `--sandbox=read-only` disables file writes and command execution.
 - Default sandbox mode is `workspace-write`.
+- On macOS, `run_command` is executed through `/usr/bin/sandbox-exec` by default and cannot write outside the workspace or temp directories.
 - `write_file` asks for confirmation unless `--yes` is used.
 - `run_command` asks for confirmation unless `--yes` is used.
+- `MINI_CLAUDE_SYSTEM_SANDBOX=off` disables the OS-level command sandbox; `on` requires it.
 - `MINI_CLAUDE_ALLOWED_COMMANDS` can restrict command execution to comma-separated prefixes.
 - A small denylist blocks obviously destructive shell snippets such as `rm -rf /`, `git reset --hard`, and fork bombs.
 
-This is not a security sandbox. It is a teaching implementation and a compact starting point for a coding agent.
+This is still a teaching implementation, but command execution now has an actual operating-system write boundary on macOS.
 
 ## Implementation Details
 
@@ -250,4 +259,5 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 | `MINI_CLAUDE_READ_MAX_CHARS` | `12000` | Default max characters returned by `read_file` |
 | `MINI_CLAUDE_SESSION` | `default` | Persistent session name |
 | `MINI_CLAUDE_SANDBOX` | `workspace-write` | Sandbox mode, e.g. `read-only` |
+| `MINI_CLAUDE_SYSTEM_SANDBOX` | `auto` | `auto`, `on`, or `off`; wraps `run_command` with macOS `sandbox-exec` when enabled |
 | `MINI_CLAUDE_ALLOWED_COMMANDS` | empty | Optional comma-separated command allowlist |

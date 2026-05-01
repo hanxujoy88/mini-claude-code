@@ -16,10 +16,12 @@ const MODEL_TIMEOUT_MS = Number(process.env.MINI_CLAUDE_TIMEOUT_MS || 120000);
 const WORKSPACE = process.cwd();
 const AUTO_YES = process.argv.includes("--yes") || process.argv.includes("-y");
 const SANDBOX_MODE = readFlag("--sandbox") || process.env.MINI_CLAUDE_SANDBOX || "workspace-write";
+const SYSTEM_SANDBOX_MODE = readFlag("--system-sandbox") || process.env.MINI_CLAUDE_SYSTEM_SANDBOX || "auto";
 const SESSION_ID = readFlag("--session") || process.env.MINI_CLAUDE_SESSION || "default";
 const SESSION_DIR = path.join(WORKSPACE, ".mini-claude-code", "sessions");
 const SESSION_FILE = path.join(SESSION_DIR, `${sanitizeSessionName(SESSION_ID)}.json`);
 const ALLOWED_COMMANDS = readAllowedCommands();
+const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 const rl = readline.createInterface({ input, output });
 const taskPlan = [];
@@ -279,6 +281,7 @@ function printBanner() {
   console.log(`Provider: ${PROVIDER}`);
   console.log(`Model: ${MODEL}`);
   console.log(`Sandbox: ${SANDBOX_MODE}`);
+  console.log(`System sandbox: ${formatSystemSandboxStatus()}`);
   console.log(`Session: ${SESSION_ID}`);
   if (ALLOWED_COMMANDS.length > 0) {
     console.log(`Allowed commands: ${ALLOWED_COMMANDS.join(", ")}`);
@@ -1179,13 +1182,18 @@ async function runCommandTool({ command, timeout_ms = 30000 }) {
     return { ok: false, error: "User rejected run_command." };
   }
 
+  const commandProcess = buildSandboxedCommand(command);
+  if (!commandProcess.ok) {
+    return { ok: false, error: commandProcess.error };
+  }
+
   const spinner = new Spinner(`Running ${command}`);
   spinner.start();
 
   return new Promise((resolve) => {
-    const child = spawn(command, {
+    const child = spawn(commandProcess.command, commandProcess.args, {
       cwd: WORKSPACE,
-      shell: true,
+      shell: false,
       stdio: ["ignore", "pipe", "pipe"]
     });
 
@@ -1209,12 +1217,76 @@ async function runCommandTool({ command, timeout_ms = 30000 }) {
       spinner.stop(code === 0 ? "ok" : "fail", `exit ${code}`);
       const outputText = trimOutput([
         `exit code: ${code}`,
+        commandProcess.sandboxed ? "system sandbox: enabled" : "system sandbox: disabled",
         stdout ? `stdout:\n${stdout}` : "",
         stderr ? `stderr:\n${stderr}` : ""
       ].filter(Boolean).join("\n\n"));
       resolve({ ok: code === 0, content: outputText, error: outputText });
     });
+
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      spinner.stop("fail", error.message);
+      resolve({ ok: false, error: `Failed to start command: ${error.message}` });
+    });
   });
+}
+
+function buildSandboxedCommand(command) {
+  if (!shouldUseSystemSandbox()) {
+    return {
+      ok: true,
+      command: "/bin/sh",
+      args: ["-lc", command],
+      sandboxed: false
+    };
+  }
+
+  if (process.platform !== "darwin") {
+    return {
+      ok: false,
+      error: `System sandbox is set to ${SYSTEM_SANDBOX_MODE}, but only macOS sandbox-exec is implemented.`
+    };
+  }
+
+  return {
+    ok: true,
+    command: MACOS_SANDBOX_EXEC,
+    args: ["-p", buildMacosSandboxProfile(), "/bin/sh", "-lc", command],
+    sandboxed: true
+  };
+}
+
+function shouldUseSystemSandbox() {
+  if (SYSTEM_SANDBOX_MODE === "off" || SYSTEM_SANDBOX_MODE === "false" || SYSTEM_SANDBOX_MODE === "0") {
+    return false;
+  }
+  if (SYSTEM_SANDBOX_MODE === "on" || SYSTEM_SANDBOX_MODE === "true" || SYSTEM_SANDBOX_MODE === "1") {
+    return true;
+  }
+  return process.platform === "darwin" && SANDBOX_MODE === "workspace-write";
+}
+
+function buildMacosSandboxProfile() {
+  const writablePaths = [
+    WORKSPACE,
+    "/private/tmp",
+    "/tmp",
+    "/private/var/folders"
+  ];
+
+  return [
+    "(version 1)",
+    "(allow default)",
+    "(deny file-write*",
+    "  (require-all",
+    ...writablePaths.map((item) => `    (require-not (subpath ${schemeString(item)}))`),
+    "    (require-not (literal \"/dev/null\"))))"
+  ].join("\n");
+}
+
+function schemeString(value) {
+  return JSON.stringify(String(value));
 }
 
 function createPlanTool({ tasks }) {
@@ -1287,13 +1359,21 @@ function sandboxStatusTool() {
   const lines = [
     `workspace: ${WORKSPACE}`,
     `mode: ${SANDBOX_MODE}`,
+    `system_sandbox: ${formatSystemSandboxStatus()}`,
     `auto_yes: ${AUTO_YES}`,
     `allowed_commands: ${ALLOWED_COMMANDS.length ? ALLOWED_COMMANDS.join(", ") : "(not restricted by prefix)"}`,
     "file_policy: paths must stay inside workspace",
     "write_policy: disabled in read-only mode; otherwise confirmation required unless --yes",
-    "command_policy: disabled in read-only mode; denylist always active; optional allowlist via MINI_CLAUDE_ALLOWED_COMMANDS"
+    "command_policy: disabled in read-only mode; denylist always active; optional allowlist via MINI_CLAUDE_ALLOWED_COMMANDS",
+    "system_policy: on macOS, run_command is executed through sandbox-exec and cannot write outside the workspace or temp directories"
   ];
   return { ok: true, content: lines.join("\n") };
+}
+
+function formatSystemSandboxStatus() {
+  if (!shouldUseSystemSandbox()) return "off";
+  if (process.platform !== "darwin") return "unavailable";
+  return `macos sandbox-exec (${SYSTEM_SANDBOX_MODE})`;
 }
 
 function resolveInsideWorkspace(inputPath) {
