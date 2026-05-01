@@ -8,6 +8,7 @@ import {
   API_KEY,
   AUTO_YES,
   MODEL,
+  PROMPT_CACHE_MODE,
   PROVIDER,
   SANDBOX_MODE,
   SESSION_FILE,
@@ -15,6 +16,7 @@ import {
   WORKSPACE,
   isByteString
 } from "./config.js";
+import { compactHistory, shouldCompactHistory } from "./history.js";
 import { createModelClient } from "./model.js";
 import { createMcpManager } from "./mcp.js";
 import { createSessionStore } from "./session.js";
@@ -45,6 +47,7 @@ Use delegate_agent when a planner, reviewer, implementer, or tester perspective 
 Use web_search when current external information matters.
 Use background task tools for long-running commands, then poll their output instead of blocking.
 MCP tools, when configured, are exposed with names like mcp__server__tool.
+read_file returns file hashes; pass known_hash on later reads to avoid reloading unchanged files.
 Respect the sandbox. If the sandbox blocks an action, explain the limitation and suggest the next safe step.
 The workspace root is: ${WORKSPACE}`;
 
@@ -76,6 +79,7 @@ function printBanner() {
   console.log(`Model: ${MODEL}`);
   console.log(`Sandbox: ${SANDBOX_MODE}`);
   console.log(`System sandbox: ${formatSystemSandboxStatus()}`);
+  console.log(`Prompt cache: ${PROMPT_CACHE_MODE}`);
   console.log(`Session: ${SESSION_ID}`);
   if (ALLOWED_COMMANDS.length > 0) {
     console.log(`Allowed commands: ${ALLOWED_COMMANDS.join(", ")}`);
@@ -143,6 +147,8 @@ async function main() {
 
     messages.push({ role: "user", content: text });
     await sessionStore.saveSession(messages);
+    await maybeCompactHistory(messages);
+    await sessionStore.saveSession(messages);
     await runAssistantTurn(messages);
     await sessionStore.saveSession(messages);
   }
@@ -172,6 +178,7 @@ function resetSession(messages) {
 
 async function runAssistantTurn(messages) {
   while (true) {
+    await maybeCompactHistory(messages);
     const response = await callModel(messages);
     const detail = recordTokenUsage(response.usage);
     console.log(`[ok] Thinking${detail ? ` - ${detail}` : ""}`);
@@ -207,6 +214,22 @@ async function runAssistantTurn(messages) {
   }
 }
 
+async function maybeCompactHistory(messages) {
+  if (!shouldCompactHistory(messages)) return;
+  console.log("[compact] history threshold reached; summarizing older context");
+  const result = await compactHistory({
+    messages,
+    callModel,
+    recordTokenUsage
+  });
+  if (!result.compacted) {
+    console.log(`[compact] skipped - ${result.reason}`);
+    return;
+  }
+  const detail = result.usageDetail ? ` | ${result.usageDetail}` : "";
+  console.log(`[compact] ${result.removedMessages} old messages -> summary, kept ${result.keptMessages}; chars ${formatNumber(result.beforeChars)} -> ${formatNumber(result.afterChars)}${detail}`);
+}
+
 async function withModelSpinner(text, action) {
   const spinner = new Spinner(text, { detail: formatThinkingDetail });
   spinner.start();
@@ -228,7 +251,8 @@ function recordTokenUsage(usage) {
   tokenTotals.output += usage.output;
   tokenTotals.total += usage.total;
 
-  return `tokens ${formatNumber(usage.input)} in, ${formatNumber(usage.output)} out, ${formatNumber(usage.total)} total | ${formatTokenTotals()}`;
+  const cache = formatCacheUsage(usage);
+  return `tokens ${formatNumber(usage.input)} in, ${formatNumber(usage.output)} out, ${formatNumber(usage.total)} total${cache} | ${formatTokenTotals()}`;
 }
 
 function formatTokenTotals() {
@@ -241,6 +265,13 @@ function formatThinkingDetail(spinner) {
 
 function formatNumber(value) {
   return Number(value || 0).toLocaleString("en-US");
+}
+
+function formatCacheUsage(usage) {
+  const created = Number(usage.cacheCreation || 0);
+  const read = Number(usage.cacheRead || 0);
+  if (created === 0 && read === 0) return "";
+  return `, cache ${formatNumber(created)} create, ${formatNumber(read)} read`;
 }
 
 async function confirm(question) {

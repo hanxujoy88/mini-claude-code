@@ -34,6 +34,9 @@ This project is an independent learning implementation. It is not affiliated wit
 - Background task manager for long-running commands
 - Terminal feedback spinners while the model thinks and tools run
 - Token usage in the `Thinking` status line after each model call, with session totals
+- File hash cache for repeated `read_file` calls
+- Automatic history compaction for long sessions
+- Anthropic prompt cache hints for stable system prompts and tool schemas
 - Persistent local sessions in `.mini-claude-code/sessions/`
 - Auto-discovered skills from `skills/*/SKILL.md`
 - Token-conscious `read_file` with line ranges and default truncation
@@ -277,6 +280,14 @@ The model can call:
 }
 ```
 
+Every `read_file` response includes a `sha256` hash. Later calls can pass that hash as `known_hash`; if the file is unchanged, Mini Claude Code returns only metadata and omits the file contents.
+
+### History And Prompt Cache
+
+Long sessions are compacted automatically once the serialized message history exceeds `MINI_CLAUDE_HISTORY_COMPACT_AFTER_CHARS`. Older messages are summarized with a no-tools model call, while the most recent messages stay verbatim.
+
+When using Anthropic, `MINI_CLAUDE_PROMPT_CACHE=auto` marks stable system prompt and tool schema blocks with ephemeral prompt-cache hints. Cache create/read token counts are shown in the `Thinking` status line when the provider reports them.
+
 See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 
 ## Environment Variables
@@ -294,6 +305,9 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 | `MINI_CLAUDE_SESSION` | `default` | Persistent session name |
 | `MINI_CLAUDE_MCP_CONFIG` | `.mini-claude-code/mcp.json` | MCP server config path |
 | `MINI_CLAUDE_WEB_SEARCH_TIMEOUT_MS` | `15000` | Web search request timeout |
+| `MINI_CLAUDE_HISTORY_COMPACT_AFTER_CHARS` | `80000` | Serialized history size that triggers auto-compaction; `0` disables |
+| `MINI_CLAUDE_HISTORY_COMPACT_KEEP_MESSAGES` | `12` | Recent messages kept verbatim during compaction |
+| `MINI_CLAUDE_PROMPT_CACHE` | `auto` | `auto` or `off`; enables Anthropic prompt cache hints |
 | `MINI_CLAUDE_SANDBOX` | `workspace-write` | Sandbox mode, e.g. `read-only` |
 | `MINI_CLAUDE_SYSTEM_SANDBOX` | `auto` | `auto`, `on`, or `off`; wraps `run_command` with macOS `sandbox-exec` when enabled |
 | `MINI_CLAUDE_ALLOWED_COMMANDS` | empty | Optional comma-separated command allowlist |

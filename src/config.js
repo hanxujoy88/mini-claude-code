@@ -18,6 +18,9 @@ export const MCP_CONFIG_FILE = readFlag("--mcp-config") || process.env.MINI_CLAU
 export const ALLOWED_COMMANDS = readAllowedCommands();
 export const DEFAULT_READ_MAX_CHARS = Number(process.env.MINI_CLAUDE_READ_MAX_CHARS || 12000);
 export const WEB_SEARCH_TIMEOUT_MS = Number(process.env.MINI_CLAUDE_WEB_SEARCH_TIMEOUT_MS || 15000);
+export const HISTORY_COMPACT_AFTER_CHARS = Number(process.env.MINI_CLAUDE_HISTORY_COMPACT_AFTER_CHARS || 80000);
+export const HISTORY_COMPACT_KEEP_MESSAGES = Number(process.env.MINI_CLAUDE_HISTORY_COMPACT_KEEP_MESSAGES || 12);
+export const PROMPT_CACHE_MODE = (process.env.MINI_CLAUDE_PROMPT_CACHE || "auto").toLowerCase();
 export const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 export function readFlag(name) {

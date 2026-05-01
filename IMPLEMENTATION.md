@@ -14,6 +14,7 @@ Mini Claude Code is a compact reference implementation of a coding agent loop.
 
 - `src/index.js`: CLI bootstrapping, REPL loop, token accounting, and high-level orchestration
 - `src/config.js`: environment variables, CLI flags, provider defaults, and workspace/session paths
+- `src/history.js`: automatic conversation history compaction
 - `src/model.js`: Anthropic and OpenAI-compatible provider adapters, streaming parsers, and token normalization
 - `src/tools.js`: local tool routing, task planning, sub-agent delegation, and command sandboxing
 - `src/toolSchemas.js`: tool schemas sent to the model
@@ -47,6 +48,19 @@ For each user prompt:
 
 Use `/new` to clear the active conversation, plan, skill state, and token totals.
 
+## History Compaction
+
+Before model calls, Mini Claude Code estimates the serialized conversation size. If it exceeds `MINI_CLAUDE_HISTORY_COMPACT_AFTER_CHARS` and there are enough messages to compact, it summarizes older messages with a no-tools model call.
+
+The compacted history keeps:
+
+- one hidden user-context summary message
+- the latest `MINI_CLAUDE_HISTORY_COMPACT_KEEP_MESSAGES` messages verbatim
+
+Tool-result messages are never left as the first retained message, avoiding malformed provider transcripts after compaction.
+
+Set `MINI_CLAUDE_HISTORY_COMPACT_AFTER_CHARS=0` to disable automatic compaction.
+
 ## Provider Adapter
 
 Internally, Mini Claude Code keeps messages and tool calls in Anthropic-style blocks:
@@ -67,6 +81,21 @@ For OpenAI-compatible providers such as Moonshot / Kimi, the adapter converts:
 This keeps the agent loop provider-agnostic while preserving one implementation of local tools.
 
 The adapter also normalizes token usage into `{ input, output, total }`. During streaming calls, assistant text is printed as the provider emits deltas. When the call finishes, the `Thinking` status line shows the current call's token usage plus updated session totals when the provider reports usage. Model calls are aborted after `MINI_CLAUDE_TIMEOUT_MS` milliseconds, defaulting to 120 seconds.
+
+### Prompt Cache
+
+When `MINI_CLAUDE_PROMPT_CACHE=auto`, Anthropic requests mark the stable system prompt and final tool schema with:
+
+```json
+{ "cache_control": { "type": "ephemeral" } }
+```
+
+This is a no-op for OpenAI-compatible providers. Token usage normalization also tracks provider-reported cache counts:
+
+- Anthropic: `cache_creation_input_tokens`, `cache_read_input_tokens`
+- OpenAI-compatible: `prompt_tokens_details.cached_tokens` when present
+
+The CLI displays those counts next to normal input/output token usage.
 
 ### Streaming
 
@@ -198,8 +227,24 @@ The result is line-numbered and token-conscious:
 - `start_line`: optional 1-based start line
 - `end_line`: optional inclusive end line
 - `max_chars`: optional output character cap
+- `known_hash`: optional `sha256` hash from a previous read
+- `force`: return contents even if `known_hash` matches
 
 By default, `read_file` returns at most `MINI_CLAUDE_READ_MAX_CHARS` characters, defaulting to 12,000. Truncated results include a continuation hint with the next line range.
+
+Each successful read includes:
+
+```text
+Hash: sha256:<hash>
+Cache: miss
+```
+
+If a later call passes the same value as `known_hash`, the tool returns a cache hit and omits file contents:
+
+```text
+Cache: hit
+Unchanged: yes
+```
 
 ### `write_file`
 
@@ -396,6 +441,9 @@ Environment variables:
 - `MINI_CLAUDE_SESSION`: defaults to `default`
 - `MINI_CLAUDE_MCP_CONFIG`: defaults to `.mini-claude-code/mcp.json`
 - `MINI_CLAUDE_WEB_SEARCH_TIMEOUT_MS`: defaults to `15000`
+- `MINI_CLAUDE_HISTORY_COMPACT_AFTER_CHARS`: defaults to `80000`; set `0` to disable
+- `MINI_CLAUDE_HISTORY_COMPACT_KEEP_MESSAGES`: defaults to `12`
+- `MINI_CLAUDE_PROMPT_CACHE`: defaults to `auto`; set `off` to disable
 - `MINI_CLAUDE_SANDBOX`: defaults to `workspace-write`
 - `MINI_CLAUDE_SYSTEM_SANDBOX`: defaults to `auto`
 - `MINI_CLAUDE_ALLOWED_COMMANDS`: optional command prefix allowlist

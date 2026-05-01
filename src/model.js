@@ -6,6 +6,7 @@ import {
   MAX_TOKENS,
   MODEL,
   MODEL_TIMEOUT_MS,
+  PROMPT_CACHE_MODE,
   PROVIDER
 } from "./config.js";
 
@@ -21,14 +22,14 @@ export function createModelClient({ systemPrompt, tools, formatTokenTotals }) {
   }
 
   async function callAnthropic(messages, options = {}) {
+    const activeTools = options.tools ?? tools;
     const body = {
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: options.system || systemPrompt,
+      system: buildAnthropicSystem(options.system || systemPrompt),
       messages: toAnthropicMessages(messages)
     };
-    const activeTools = options.tools ?? tools;
-    if (activeTools.length > 0) body.tools = activeTools;
+    if (activeTools.length > 0) body.tools = buildAnthropicTools(activeTools);
 
     const res = await fetchWithTimeout(API_URL, {
       method: "POST",
@@ -91,15 +92,15 @@ export function createModelClient({ systemPrompt, tools, formatTokenTotals }) {
   }
 
   async function callAnthropicStream(messages, options = {}) {
+    const activeTools = options.tools ?? tools;
     const body = {
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: options.system || systemPrompt,
+      system: buildAnthropicSystem(options.system || systemPrompt),
       messages: toAnthropicMessages(messages),
       stream: true
     };
-    const activeTools = options.tools ?? tools;
-    if (activeTools.length > 0) body.tools = activeTools;
+    if (activeTools.length > 0) body.tools = buildAnthropicTools(activeTools);
 
     const res = await fetchStreaming(API_URL, {
       method: "POST",
@@ -389,11 +390,15 @@ function normalizeAnthropicUsage(usage) {
   if (!usage) return null;
   const input = Number(usage.input_tokens || 0);
   const outputTokens = Number(usage.output_tokens || 0);
-  if (input === 0 && outputTokens === 0) return null;
+  const cacheCreation = Number(usage.cache_creation_input_tokens || 0);
+  const cacheRead = Number(usage.cache_read_input_tokens || 0);
+  if (input === 0 && outputTokens === 0 && cacheCreation === 0 && cacheRead === 0) return null;
   return {
     input,
     output: outputTokens,
-    total: input + outputTokens
+    total: input + outputTokens,
+    cacheCreation,
+    cacheRead
   };
 }
 
@@ -402,11 +407,41 @@ function normalizeOpenAIUsage(usage) {
   const input = Number(usage.prompt_tokens || usage.input_tokens || 0);
   const outputTokens = Number(usage.completion_tokens || usage.output_tokens || 0);
   if (input === 0 && outputTokens === 0 && !usage.total_tokens) return null;
+  const cacheRead = Number(usage.prompt_tokens_details?.cached_tokens || 0);
   return {
     input,
     output: outputTokens,
-    total: Number(usage.total_tokens || input + outputTokens)
+    total: Number(usage.total_tokens || input + outputTokens),
+    cacheCreation: 0,
+    cacheRead
   };
+}
+
+function buildAnthropicSystem(system) {
+  if (!isPromptCacheEnabled()) return system;
+  return [
+    {
+      type: "text",
+      text: system,
+      cache_control: { type: "ephemeral" }
+    }
+  ];
+}
+
+function buildAnthropicTools(activeTools) {
+  if (!isPromptCacheEnabled() || activeTools.length === 0) return activeTools;
+  return activeTools.map((tool, index) => (
+    index === activeTools.length - 1
+      ? { ...tool, cache_control: { type: "ephemeral" } }
+      : tool
+  ));
+}
+
+function isPromptCacheEnabled() {
+  if (PROMPT_CACHE_MODE === "off" || PROMPT_CACHE_MODE === "false" || PROMPT_CACHE_MODE === "0") {
+    return false;
+  }
+  return PROVIDER === "anthropic";
 }
 
 function toOpenAIMessages(messages, system) {

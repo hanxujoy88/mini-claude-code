@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   ALLOWED_COMMANDS,
   AUTO_YES,
@@ -82,11 +83,24 @@ export function createToolRunner({ skills, taskPlan, callModel, confirm, withMod
     });
   }
 
-  async function readFileTool({ path: filePath, start_line, end_line, max_chars }) {
+  async function readFileTool({ path: filePath, start_line, end_line, max_chars, known_hash, force = false }) {
     return withSpinner(`Reading ${filePath}`, async () => {
       const fullPath = resolveInsideWorkspace(filePath);
       const content = await fs.readFile(fullPath, "utf8");
-      return { ok: true, content: formatFileReadResult(filePath, content, { start_line, end_line, max_chars }) };
+      const hash = sha256(content);
+      if (!force && known_hash && normalizeHash(known_hash) === hash) {
+        return {
+          ok: true,
+          content: [
+            `File: ${filePath}`,
+            `Hash: sha256:${hash}`,
+            "Cache: hit",
+            "Unchanged: yes",
+            "Contents omitted. Set force=true to return contents anyway."
+          ].join("\n")
+        };
+      }
+      return { ok: true, content: formatFileReadResult(filePath, content, { start_line, end_line, max_chars, hash }) };
     });
   }
 
@@ -336,6 +350,8 @@ function formatFileReadResult(filePath, content, options) {
   const truncated = truncatedByChars || shownEnd < endLine;
   const header = [
     `File: ${filePath}`,
+    `Hash: sha256:${options.hash}`,
+    "Cache: miss",
     `Lines: ${startLine}-${shownEnd} of ${totalLines}`,
     `Max chars: ${maxChars}`
   ];
@@ -345,8 +361,17 @@ function formatFileReadResult(filePath, content, options) {
   } else {
     header.push("Truncated: no");
   }
+  header.push(`Cache hint: pass known_hash="sha256:${options.hash}" on later read_file calls to omit unchanged contents.`);
 
   return `${header.join("\n")}\n\n${numbered.join("\n")}`;
+}
+
+function sha256(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function normalizeHash(value) {
+  return String(value || "").replace(/^sha256:/, "").trim().toLowerCase();
 }
 
 function positiveInteger(value) {

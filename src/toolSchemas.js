@@ -38,6 +38,14 @@ export const tools = [
         max_chars: {
           type: "number",
           description: "Maximum characters to return. Defaults to MINI_CLAUDE_READ_MAX_CHARS or 12000."
+        },
+        known_hash: {
+          type: "string",
+          description: "Optional sha256 hash from a previous read. If unchanged, the tool returns metadata without file contents."
+        },
+        force: {
+          type: "boolean",
+          description: "Set true to return contents even when known_hash matches."
         }
       },
       required: ["path"]
