@@ -10,6 +10,17 @@ Mini Claude Code is a compact reference implementation of a coding agent loop.
 - API: Anthropic Messages API or OpenAI-compatible chat completions
 - Entry point: `src/index.js`
 
+## Module Layout
+
+- `src/index.js`: CLI bootstrapping, REPL loop, token accounting, and high-level orchestration
+- `src/config.js`: environment variables, CLI flags, provider defaults, and workspace/session paths
+- `src/model.js`: Anthropic and OpenAI-compatible provider adapters, streaming parsers, and token normalization
+- `src/tools.js`: local tool implementations, task planning, sub-agent delegation, and command sandboxing
+- `src/toolSchemas.js`: tool schemas sent to the model
+- `src/session.js`: persistent session load/save and state restoration
+- `src/skills.js`: skill discovery, matching, and hidden skill-context injection
+- `src/ui.js`: terminal spinner helpers
+
 ## Conversation Loop
 
 The CLI restores a persistent `messages` array for the active session, defaulting to `.mini-claude-code/sessions/default.json`.
