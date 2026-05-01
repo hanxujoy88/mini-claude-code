@@ -16,6 +16,7 @@ import {
   isByteString
 } from "./config.js";
 import { createModelClient } from "./model.js";
+import { createMcpManager } from "./mcp.js";
 import { createSessionStore } from "./session.js";
 import { buildSkillContext, loadSkills, matchSkills } from "./skills.js";
 import { tools } from "./toolSchemas.js";
@@ -31,6 +32,8 @@ const tokenTotals = {
 };
 const activeSkillNames = new Set();
 const skills = await loadSkills();
+const mcpManager = await createMcpManager();
+const allTools = [...tools, ...mcpManager.toolSchemas()];
 
 const systemPrompt = `You are Mini Claude Code, a small terminal coding assistant.
 
@@ -39,6 +42,9 @@ Prefer small, clear edits. Read files before modifying them. Explain what you ar
 Never claim you changed files unless a tool result confirms it.
 For multi-step work, create and maintain a task plan.
 Use delegate_agent when a planner, reviewer, implementer, or tester perspective would reduce risk.
+Use web_search when current external information matters.
+Use background task tools for long-running commands, then poll their output instead of blocking.
+MCP tools, when configured, are exposed with names like mcp__server__tool.
 Respect the sandbox. If the sandbox blocks an action, explain the limitation and suggest the next safe step.
 The workspace root is: ${WORKSPACE}`;
 
@@ -50,16 +56,17 @@ const sessionStore = createSessionStore({
 
 const { callModel } = createModelClient({
   systemPrompt,
-  tools,
+  tools: allTools,
   formatTokenTotals
 });
 
-const { runToolWithFeedback } = createToolRunner({
+const { runToolWithFeedback, stopBackgroundTasks } = createToolRunner({
   skills,
   taskPlan,
   callModel,
   confirm,
-  withModelSpinner
+  withModelSpinner,
+  mcpManager
 });
 
 function printBanner() {
@@ -74,6 +81,7 @@ function printBanner() {
     console.log(`Allowed commands: ${ALLOWED_COMMANDS.join(", ")}`);
   }
   console.log(`Skills: ${skills.length ? skills.map((skill) => skill.name).join(", ") : "none"}`);
+  console.log(`MCP: ${mcpManager.status()}`);
   console.log("Type /new to start a fresh session, /exit to quit.\n");
 }
 
@@ -139,7 +147,7 @@ async function main() {
     await sessionStore.saveSession(messages);
   }
 
-  rl.close();
+  await shutdown();
 }
 
 async function askPrompt() {
@@ -244,5 +252,11 @@ async function confirm(question) {
 main().catch((error) => {
   console.error(`Fatal: ${error.message}`);
   process.exitCode = 1;
-  rl.close();
+  void shutdown();
 });
+
+async function shutdown() {
+  stopBackgroundTasks();
+  await mcpManager.close();
+  rl.close();
+}

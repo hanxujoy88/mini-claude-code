@@ -2,7 +2,7 @@
 
 A minimal Claude Code-style terminal assistant. It gives Claude a small set of local tools so it can inspect a project, edit files, and run commands while you stay in control.
 
-This is intentionally tiny: one Node.js file, no runtime dependencies, and explicit confirmation before file writes or command execution.
+This is intentionally tiny: a small set of Node.js modules, no runtime dependencies, and explicit confirmation before file writes or command execution.
 
 This project is an independent learning implementation. It is not affiliated with Anthropic or the official Claude Code product.
 
@@ -16,13 +16,22 @@ This project is an independent learning implementation. It is not affiliated wit
   - `read_file`
   - `write_file`
   - `run_command`
+  - `web_search`
+  - `start_background_task`
+  - `list_background_tasks`
+  - `read_background_task`
+  - `stop_background_task`
   - `create_plan`
   - `update_task`
   - `list_plan`
   - `delegate_agent`
   - `sandbox_status`
+  - `list_mcp_tools`
 - In-memory task planning
 - Small multi-agent delegation system
+- MCP stdio server integration
+- Web search with optional Brave Search API support
+- Background task manager for long-running commands
 - Terminal feedback spinners while the model thinks and tools run
 - Token usage in the `Thinking` status line after each model call, with session totals
 - Persistent local sessions in `.mini-claude-code/sessions/`
@@ -116,6 +125,31 @@ Only allow selected command prefixes:
 
 ```bash
 MINI_CLAUDE_ALLOWED_COMMANDS="npm,git,ls,pwd" npm start
+```
+
+Configure MCP servers with `.mini-claude-code/mcp.json`:
+
+```json
+{
+  "servers": {
+    "example": {
+      "command": "node",
+      "args": ["path/to/mcp-server.js"]
+    }
+  }
+}
+```
+
+Use another MCP config file:
+
+```bash
+npm start -- --mcp-config=./mcp.json
+```
+
+For stronger web search results, set a Brave Search key:
+
+```bash
+export BRAVE_SEARCH_API_KEY="..."
 ```
 
 Exit with `/exit` or `Ctrl+C`.
@@ -258,6 +292,8 @@ See [IMPLEMENTATION.md](IMPLEMENTATION.md) for a more detailed breakdown.
 | `MINI_CLAUDE_TIMEOUT_MS` | `120000` | Model request timeout in milliseconds |
 | `MINI_CLAUDE_READ_MAX_CHARS` | `12000` | Default max characters returned by `read_file` |
 | `MINI_CLAUDE_SESSION` | `default` | Persistent session name |
+| `MINI_CLAUDE_MCP_CONFIG` | `.mini-claude-code/mcp.json` | MCP server config path |
+| `MINI_CLAUDE_WEB_SEARCH_TIMEOUT_MS` | `15000` | Web search request timeout |
 | `MINI_CLAUDE_SANDBOX` | `workspace-write` | Sandbox mode, e.g. `read-only` |
 | `MINI_CLAUDE_SYSTEM_SANDBOX` | `auto` | `auto`, `on`, or `off`; wraps `run_command` with macOS `sandbox-exec` when enabled |
 | `MINI_CLAUDE_ALLOWED_COMMANDS` | empty | Optional comma-separated command allowlist |

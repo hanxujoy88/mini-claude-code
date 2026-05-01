@@ -10,7 +10,10 @@ import {
   SYSTEM_SANDBOX_MODE,
   WORKSPACE
 } from "./config.js";
+import { createBackgroundTaskManager } from "./backgroundTasks.js";
+import { trimOutput } from "./text.js";
 import { Spinner, withSpinner } from "./ui.js";
+import { webSearch } from "./webSearch.js";
 
 const agents = {
   planner: "You are the Planner agent. Break ambiguous coding work into concise, ordered steps. Do not edit files. Focus on sequencing, risks, and test strategy.",
@@ -19,19 +22,30 @@ const agents = {
   tester: "You are the Tester agent. Design lightweight validation steps and explain what each check proves."
 };
 
-export function createToolRunner({ skills, taskPlan, callModel, confirm, withModelSpinner }) {
+export function createToolRunner({ skills, taskPlan, callModel, confirm, withModelSpinner, mcpManager }) {
+  const backgroundTasks = createBackgroundTaskManager({
+    buildCommandProcess: buildSandboxedCommand
+  });
+
   async function runTool(name, input) {
     try {
       if (name === "list_files") return await listFiles(input);
       if (name === "read_file") return await readFileTool(input);
       if (name === "write_file") return await writeFileTool(input);
       if (name === "run_command") return await runCommandTool(input);
+      if (name === "web_search") return await webSearch(input);
+      if (name === "start_background_task") return await startBackgroundTaskTool(input);
+      if (name === "list_background_tasks") return backgroundTasks.list();
+      if (name === "read_background_task") return backgroundTasks.read(input);
+      if (name === "stop_background_task") return backgroundTasks.stop(input);
       if (name === "create_plan") return createPlanTool(input);
       if (name === "update_task") return updateTaskTool(input);
       if (name === "list_plan") return listPlanTool();
       if (name === "delegate_agent") return await delegateAgentTool(input);
       if (name === "sandbox_status") return sandboxStatusTool();
       if (name === "list_skills") return listSkillsTool();
+      if (name === "list_mcp_tools") return { ok: true, content: mcpManager?.listToolSummary() || "No MCP tools loaded." };
+      if (mcpManager?.hasTool(name)) return await mcpManager.callTool(name, input);
       return { ok: false, error: `Unknown tool: ${name}` };
     } catch (error) {
       return { ok: false, error: error.message };
@@ -95,25 +109,15 @@ export function createToolRunner({ skills, taskPlan, callModel, confirm, withMod
     });
   }
 
+  async function startBackgroundTaskTool({ command, name = "" }) {
+    const check = await checkCommandAllowed(command, `Start background task: ${command}?`);
+    if (!check.ok) return check;
+    return backgroundTasks.start({ command, name });
+  }
+
   async function runCommandTool({ command, timeout_ms = 30000 }) {
-    if (SANDBOX_MODE === "read-only") {
-      return { ok: false, error: "Sandbox is read-only; run_command is disabled." };
-    }
-
-    if (isDangerousCommand(command)) {
-      return { ok: false, error: `Blocked dangerous command: ${command}` };
-    }
-
-    if (ALLOWED_COMMANDS.length > 0 && !isAllowedCommand(command)) {
-      return {
-        ok: false,
-        error: `Command is not allowed by MINI_CLAUDE_ALLOWED_COMMANDS: ${command}`
-      };
-    }
-
-    if (!(await confirm(`Run command: ${command}?`))) {
-      return { ok: false, error: "User rejected run_command." };
-    }
+    const check = await checkCommandAllowed(command, `Run command: ${command}?`);
+    if (!check.ok) return check;
 
     const commandProcess = buildSandboxedCommand(command);
     if (!commandProcess.ok) {
@@ -163,6 +167,33 @@ export function createToolRunner({ skills, taskPlan, callModel, confirm, withMod
         resolve({ ok: false, error: `Failed to start command: ${error.message}` });
       });
     });
+  }
+
+  async function checkCommandAllowed(command, prompt) {
+    if (!command || typeof command !== "string") {
+      return { ok: false, error: "command is required." };
+    }
+
+    if (SANDBOX_MODE === "read-only") {
+      return { ok: false, error: "Sandbox is read-only; run_command is disabled." };
+    }
+
+    if (isDangerousCommand(command)) {
+      return { ok: false, error: `Blocked dangerous command: ${command}` };
+    }
+
+    if (ALLOWED_COMMANDS.length > 0 && !isAllowedCommand(command)) {
+      return {
+        ok: false,
+        error: `Command is not allowed by MINI_CLAUDE_ALLOWED_COMMANDS: ${command}`
+      };
+    }
+
+    if (!(await confirm(prompt))) {
+      return { ok: false, error: "User rejected command." };
+    }
+
+    return { ok: true };
   }
 
   function createPlanTool({ tasks }) {
@@ -231,7 +262,10 @@ export function createToolRunner({ skills, taskPlan, callModel, confirm, withMod
     return { ok: true, content: text || "(sub-agent returned no text)" };
   }
 
-  return { runToolWithFeedback };
+  return {
+    runToolWithFeedback,
+    stopBackgroundTasks: backgroundTasks.stopAll
+  };
 }
 
 export function sandboxStatusTool() {
@@ -405,9 +439,4 @@ function isDangerousCommand(command) {
 function isAllowedCommand(command) {
   const compact = command.trim();
   return ALLOWED_COMMANDS.some((allowed) => compact === allowed || compact.startsWith(`${allowed} `));
-}
-
-function trimOutput(text, max = 12000) {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}\n... output truncated ...`;
 }

@@ -80,6 +80,83 @@ export const tools = [
     }
   },
   {
+    name: "web_search",
+    description: "Search the web for current information. Uses Brave Search when BRAVE_SEARCH_API_KEY is set; otherwise uses DuckDuckGo Instant Answer.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query."
+        },
+        max_results: {
+          type: "number",
+          description: "Maximum results to return, 1-10. Defaults to 5."
+        }
+      },
+      required: ["query"]
+    }
+  },
+  {
+    name: "start_background_task",
+    description: "Start a long-running shell command in the workspace and return immediately. Requires user confirmation unless --yes is enabled.",
+    input_schema: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description: "Command to run in the background."
+        },
+        name: {
+          type: "string",
+          description: "Optional short label for the task."
+        }
+      },
+      required: ["command"]
+    }
+  },
+  {
+    name: "list_background_tasks",
+    description: "List background tasks started by this CLI process.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: "read_background_task",
+    description: "Read status and captured output from a background task.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Background task id."
+        },
+        tail_chars: {
+          type: "number",
+          description: "Maximum trailing stdout/stderr characters to return. Defaults to 12000."
+        }
+      },
+      required: ["id"]
+    }
+  },
+  {
+    name: "stop_background_task",
+    description: "Stop a running background task with SIGTERM.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Background task id."
+        }
+      },
+      required: ["id"]
+    }
+  },
+  {
     name: "create_plan",
     description: "Create or replace the current task plan. Use this for multi-step work.",
     input_schema: {
@@ -161,6 +238,15 @@ export const tools = [
   {
     name: "list_skills",
     description: "List auto-discovered skills and descriptions.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: "list_mcp_tools",
+    description: "List tools discovered from configured MCP servers.",
     input_schema: {
       type: "object",
       properties: {},

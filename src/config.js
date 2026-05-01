@@ -14,8 +14,10 @@ export const SYSTEM_SANDBOX_MODE = readFlag("--system-sandbox") || process.env.M
 export const SESSION_ID = readFlag("--session") || process.env.MINI_CLAUDE_SESSION || "default";
 export const SESSION_DIR = path.join(WORKSPACE, ".mini-claude-code", "sessions");
 export const SESSION_FILE = path.join(SESSION_DIR, `${sanitizeSessionName(SESSION_ID)}.json`);
+export const MCP_CONFIG_FILE = readFlag("--mcp-config") || process.env.MINI_CLAUDE_MCP_CONFIG || path.join(WORKSPACE, ".mini-claude-code", "mcp.json");
 export const ALLOWED_COMMANDS = readAllowedCommands();
 export const DEFAULT_READ_MAX_CHARS = Number(process.env.MINI_CLAUDE_READ_MAX_CHARS || 12000);
+export const WEB_SEARCH_TIMEOUT_MS = Number(process.env.MINI_CLAUDE_WEB_SEARCH_TIMEOUT_MS || 15000);
 export const MACOS_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 export function readFlag(name) {

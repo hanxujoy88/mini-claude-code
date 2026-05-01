@@ -15,8 +15,12 @@ Mini Claude Code is a compact reference implementation of a coding agent loop.
 - `src/index.js`: CLI bootstrapping, REPL loop, token accounting, and high-level orchestration
 - `src/config.js`: environment variables, CLI flags, provider defaults, and workspace/session paths
 - `src/model.js`: Anthropic and OpenAI-compatible provider adapters, streaming parsers, and token normalization
-- `src/tools.js`: local tool implementations, task planning, sub-agent delegation, and command sandboxing
+- `src/tools.js`: local tool routing, task planning, sub-agent delegation, and command sandboxing
 - `src/toolSchemas.js`: tool schemas sent to the model
+- `src/mcp.js`: stdio MCP client, dynamic MCP tool discovery, and MCP tool calls
+- `src/webSearch.js`: web search provider adapters
+- `src/backgroundTasks.js`: in-memory background command manager
+- `src/text.js`: shared text helpers
 - `src/session.js`: persistent session load/save and state restoration
 - `src/skills.js`: skill discovery, matching, and hidden skill-context injection
 - `src/ui.js`: terminal spinner helpers
@@ -101,7 +105,7 @@ The assistant can manage it with:
 - `update_task`
 - `list_plan`
 
-This gives the model enough structure to handle multi-step tasks without adding a database or background scheduler. The current plan is saved in the active session file.
+This gives the model enough structure to handle multi-step tasks without adding a database. The current plan is saved in the active session file.
 
 ## Multi-Agent Delegation
 
@@ -221,6 +225,26 @@ Run command: npm test? [y/N]
 
 Pass `--yes` to auto-approve commands.
 
+### `web_search`
+
+Searches the web for current information.
+
+Provider behavior:
+
+- If `BRAVE_SEARCH_API_KEY` is set, it uses Brave Search.
+- Otherwise it falls back to DuckDuckGo Instant Answer, which is free but less complete.
+
+### Background Tasks
+
+Long-running commands can be started without blocking the assistant loop:
+
+- `start_background_task`: starts a command and returns a task id
+- `list_background_tasks`: lists task ids and statuses
+- `read_background_task`: reads captured stdout/stderr
+- `stop_background_task`: sends `SIGTERM`
+
+Background tasks are process-local. They are not restored after the CLI exits.
+
 ### `create_plan`
 
 Replaces the current in-memory task plan.
@@ -244,6 +268,45 @@ Reports current workspace, sandbox mode, auto-approval mode, and command policy.
 ### `list_skills`
 
 Lists loaded skills and their descriptions.
+
+### `list_mcp_tools`
+
+Lists MCP tools discovered from configured MCP servers.
+
+## MCP
+
+MCP servers are loaded at startup from:
+
+```text
+.mini-claude-code/mcp.json
+```
+
+The path can be overridden with `MINI_CLAUDE_MCP_CONFIG` or `--mcp-config`.
+
+The config accepts either `servers` or `mcpServers`:
+
+```json
+{
+  "servers": {
+    "example": {
+      "command": "node",
+      "args": ["path/to/mcp-server.js"],
+      "env": {
+        "EXAMPLE_KEY": "value"
+      },
+      "timeout_ms": 30000
+    }
+  }
+}
+```
+
+The MCP client uses JSON-RPC over stdio. At startup it calls `initialize`, sends `notifications/initialized`, then calls `tools/list`. MCP tools are exposed to the model as:
+
+```text
+mcp__<server>__<tool>
+```
+
+When the model calls one of those tools, Mini Claude Code forwards it to the MCP server with `tools/call` and returns text content to the main tool loop.
 
 ## Workspace Boundary
 
@@ -331,6 +394,8 @@ Environment variables:
 - `MINI_CLAUDE_MODEL`: defaults by provider
 - `MINI_CLAUDE_MAX_TOKENS`: defaults to `4096`
 - `MINI_CLAUDE_SESSION`: defaults to `default`
+- `MINI_CLAUDE_MCP_CONFIG`: defaults to `.mini-claude-code/mcp.json`
+- `MINI_CLAUDE_WEB_SEARCH_TIMEOUT_MS`: defaults to `15000`
 - `MINI_CLAUDE_SANDBOX`: defaults to `workspace-write`
 - `MINI_CLAUDE_SYSTEM_SANDBOX`: defaults to `auto`
 - `MINI_CLAUDE_ALLOWED_COMMANDS`: optional command prefix allowlist
@@ -340,6 +405,7 @@ CLI flags:
 
 - `--yes` or `-y`: auto-approve writes and commands
 - `--session <name>` or `--session=<name>`: choose a persistent session file
+- `--mcp-config <path>` or `--mcp-config=<path>`: choose an MCP config file
 - `--system-sandbox <auto|on|off>` or `--system-sandbox=<auto|on|off>`: control OS-level command sandboxing
 
 ## Deliberate Omissions
@@ -349,9 +415,6 @@ This project is intentionally minimal. It does not yet include:
 - Git-aware patch generation
 - Multi-file diff preview
 - Structured approvals
-- MCP support
-- Web search
-- Background task management
 - Skill asset loading and marketplace installation
 
 Those are natural next steps if you want to evolve it from a teaching implementation into a practical coding assistant.
